@@ -53,8 +53,12 @@ typedef unsigned int uid_t;
 #define sock_write(s, b, l) send(s, (const char *)(b), l, 0)
 
 /* Sleep compatibility */
+#ifndef sleep
 #define sleep(s) Sleep((s) * 1000)
+#endif
+#ifndef usleep
 #define usleep(us) Sleep((us) / 1000)
+#endif
 
 /* Signal compatibility - minimal stubs */
 #ifndef SIGPIPE
@@ -82,6 +86,46 @@ static inline uid_t geteuid(void)
 
 /* Environment variable compatibility */
 #define setenv(name, value, overwrite) _putenv_s(name, value)
+
+/* getline() replacement for MinGW (POSIX getline is not available) */
+static inline ssize_t getline(char **lineptr, size_t *n, FILE *stream)
+{
+	size_t pos = 0;
+	int c;
+
+	if (lineptr == NULL || n == NULL || stream == NULL)
+		return -1;
+
+	if (*lineptr == NULL || *n < 128) {
+		char *new_ptr = realloc(*lineptr, 128);
+
+		if (new_ptr == NULL)
+			return -1;
+		*lineptr = new_ptr;
+		*n = 128;
+	}
+
+	while ((c = fgetc(stream)) != EOF) {
+		if (pos + 1 >= *n) {
+			size_t new_size = *n * 2;
+			char *new_ptr = realloc(*lineptr, new_size);
+
+			if (new_ptr == NULL)
+				return -1;
+			*lineptr = new_ptr;
+			*n = new_size;
+		}
+		(*lineptr)[pos++] = (char)c;
+		if (c == '\n')
+			break;
+	}
+
+	if (pos == 0 && c == EOF)
+		return -1;
+
+	(*lineptr)[pos] = '\0';
+	return (ssize_t)pos;
+}
 
 /* Initialize Winsock - call once at startup */
 static inline int winsock_init(void)

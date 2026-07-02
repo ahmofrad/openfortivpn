@@ -729,6 +729,7 @@ int main(int argc, char *argv[])
 	// over a direct otp-seed value).
 	if (cfg.otp_seed_file != NULL) {
 		char *seed = read_otp_seed_file(cfg.otp_seed_file);
+
 		if (seed != NULL) {
 			if (cfg.otp_seed != NULL) {
 				OPENSSL_cleanse(cfg.otp_seed, strlen(cfg.otp_seed));

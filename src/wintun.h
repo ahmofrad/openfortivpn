@@ -80,27 +80,27 @@ static inline int wintun_load(struct wintun_api *api)
 
 	api->module = mod;
 
-#define LOAD_FUNC(name) \
+#define LOAD_FUNC(field, name) \
 	do { \
-		api->name = (WINTUN_##name##_FUNC) \
-			GetProcAddress(mod, "Wintun" #name); \
-		if (!api->name) { \
+		api->field = (WINTUN_##name##_FUNC) \
+			GetProcAddress(mod, "Wintun" #field); \
+		if (!api->field) { \
 			FreeLibrary(mod); \
 			return -1; \
 		} \
 	} while (0)
 
-	LOAD_FUNC(CreateAdapter);
-	LOAD_FUNC(CloseAdapter);
-	LOAD_FUNC(StartSession);
-	LOAD_FUNC(EndSession);
-	LOAD_FUNC(GetReadWaitEvent);
-	LOAD_FUNC(ReceivePacket);
-	LOAD_FUNC(ReleaseReceivePacket);
-	LOAD_FUNC(AllocateSendPacket);
-	LOAD_FUNC(SendPacket);
-	LOAD_FUNC(GetAdapterLUID);
-	LOAD_FUNC(GetRunningDriverVersion);
+	LOAD_FUNC(CreateAdapter, CREATE_ADAPTER);
+	LOAD_FUNC(CloseAdapter, CLOSE_ADAPTER);
+	LOAD_FUNC(StartSession, START_SESSION);
+	LOAD_FUNC(EndSession, END_SESSION);
+	LOAD_FUNC(GetReadWaitEvent, GET_READ_WAIT_EVENT);
+	LOAD_FUNC(ReceivePacket, RECEIVE_PACKET);
+	LOAD_FUNC(ReleaseReceivePacket, RELEASE_RECEIVE_PACKET);
+	LOAD_FUNC(AllocateSendPacket, ALLOCATE_SEND_PACKET);
+	LOAD_FUNC(SendPacket, SEND_PACKET);
+	LOAD_FUNC(GetAdapterLUID, GET_ADAPTER_LUID);
+	LOAD_FUNC(GetRunningDriverVersion, GET_RUNNING_DRIVER_VERSION);
 
 #undef LOAD_FUNC
 

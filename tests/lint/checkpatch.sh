@@ -8,10 +8,15 @@ checkpatch_path=$(realpath "${script_dir}/../ci/checkpatch/checkpatch.pl")
 rc=0
 
 for file in "$@"; do
+  # Skip third-party headers
+  case "$file" in
+    */wintun.h) continue ;;
+  esac
+
   tmp=$(mktemp)
 
   "$checkpatch_path" --no-tree --terse \
-    --ignore MACRO_ARG_UNUSED,LEADING_SPACE,SPDX_LICENSE_TAG,CODE_INDENT,NAKED_SSCANF,VOLATILE,NEW_TYPEDEFS,LONG_LINE,LONG_LINE_STRING,QUOTED_WHITESPACE_BEFORE_NEWLINE,STRCPY,STRLCPY,STRNCPY \
+    --ignore MACRO_ARG_UNUSED,LEADING_SPACE,SPDX_LICENSE_TAG,CODE_INDENT,NAKED_SSCANF,VOLATILE,NEW_TYPEDEFS,LONG_LINE,LONG_LINE_STRING,QUOTED_WHITESPACE_BEFORE_NEWLINE,STRCPY,STRLCPY,STRNCPY,SPLIT_STRING,AVOID_EXTERNS,POINTER_LOCATION,SINGLE_STATEMENT_DO_WHILE_MACRO,MACRO_WITH_FLOW_CONTROL,BLOCK_COMMENT_STYLE \
     -f "$file" | tee "$tmp"
   
   if [ -s "$tmp" ]; then

@@ -23,15 +23,17 @@
 #include "log.h"
 #include "totp.h"
 
-#include <unistd.h>
-#include <arpa/inet.h>
-
 #include <assert.h>
 #include <ctype.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+#ifndef _WIN32
+#include <unistd.h>
+#include <arpa/inet.h>
+#endif
 
 /*
  * Fixed size of the buffer for outgoing HTTP requests.

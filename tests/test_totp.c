@@ -12,7 +12,7 @@
 #include <stdio.h>
 #include <string.h>
 
-static int failures = 0;
+static int failures;
 
 static void check_str(const char *label, const char *got, const char *want)
 {
