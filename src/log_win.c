@@ -30,6 +30,14 @@
 #include <stdarg.h>
 #include <string.h>
 
+/* Check if a file descriptor is a console (replaces _isatty) */
+static int is_console(FILE *f)
+{
+	return GetFileType(GetStdHandle(f == stdin ? STD_INPUT_HANDLE :
+	                                f == stderr ? STD_ERROR_HANDLE :
+	                                STD_OUTPUT_HANDLE)) == FILE_TYPE_CHAR;
+}
+
 enum log_verbosity loglevel = OFV_LOG_INFO;
 
 static int do_syslog_flag;
@@ -50,7 +58,7 @@ void init_logging(void)
 		if (GetConsoleMode(hConsole, &mode)) {
 			if (SetConsoleMode(hConsole,
 			                   mode | ENABLE_VIRTUAL_TERMINAL_PROCESSING)) {
-				use_colors = _isatty(_fileno(stdout));
+				use_colors = is_console(stdout);
 			}
 		}
 	}
