@@ -40,7 +40,7 @@ typedef int ssize_t;
 #define _PID_T_
 typedef int pid_t;
 #endif
-	typedef unsigned int uid_t;
+typedef unsigned int uid_t;
 
 /* File descriptor compatibility */
 #define STDIN_FILENO  0
