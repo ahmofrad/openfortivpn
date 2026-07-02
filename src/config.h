@@ -88,6 +88,8 @@ struct vpn_config {
 	char			*otp_prompt;
 	unsigned int		otp_delay;
 	int			no_ftm_push;
+	char			*otp_seed;	/* Base32 TOTP seed */
+	char			*otp_seed_file;	/* Path to file containing seed */
 	char			*pinentry;
 	char			iface_name[IF_NAMESIZE];
 	char			realm[REALM_SIZE + 1];

@@ -15,6 +15,8 @@ openfortivpn \- Client for PPP+TLS VPN tunnel services
 [\fB\-\-otp=\fI<otp>\fR]
 [\fB\-\-otp\-prompt=\fI<prompt>\fR]
 [\fB\-\-otp\-delay=\fI<delay>\fR]
+[\fB\-\-otp\-seed=\fI<seed>\fR]
+[\fB\-\-otp\-seed\-file=\fI<file>\fR]
 [\fB\-\-no\-ftm\-push\fR]
 [\fB\-\-realm=\fI<realm>\fR]
 [\fB\-\-ifname=\fI<interface>\fR]
@@ -104,6 +106,21 @@ Search for the OTP password prompt starting with the string \fI<prompt>\fR.
 Set the amount of time to wait before sending the One-Time-Password.
 The delay time must be specified in seconds, where 0 means
 no wait (this is the default).
+.TP
+\fB\-\-otp\-seed=\fI<seed>\fR
+A Base32 (RFC 4648) encoded TOTP seed. When provided, the One-Time-Password
+is generated automatically using RFC 6238 (HMAC-SHA1, 30-second step,
+6 digits). This avoids the need to enter or pipe the OTP manually.
+If the value starts with \fBenv:\fR the remainder is interpreted as the
+name of an environment variable holding the seed, which keeps the secret
+out of the process list and configuration files.
+An explicit \fB\-\-otp\fR value always takes precedence over \-\-otp\-seed.
+.TP
+\fB\-\-otp\-seed\-file=\fI<file>\fR
+Read the Base32 TOTP seed from the first non-empty line of \fI<file>\fR
+(leading and trailing whitespace is trimmed). This keeps the seed out of
+the process list and is preferred over \fB\-\-otp\-seed\fR when available.
+Takes precedence over \fB\-\-otp\-seed\fR.
 .TP
 \fB\-\-no\-ftm\-push\fR
 Do not use FTM push if the server provides the option.
@@ -336,6 +353,18 @@ username = foo
 # otp\-delay = 0
 .br
 # otp\-prompt = Please
+.br
+# Generate the OTP automatically from a Base32 TOTP seed:
+.br
+# otp\-seed = GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ
+.br
+# or read it from an environment variable to avoid exposing it here:
+.br
+# otp\-seed = env:OPENFORTIVPN_OTP_SEED
+.br
+# or read it from a file (first non-empty line, recommended):
+.br
+# otp\-seed\-file = /etc/openfortivpn/otp-seed
 .br
 # This would disable FTM push notification support, and use OTP instead
 .br

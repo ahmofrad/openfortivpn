@@ -63,7 +63,7 @@ jobs:
       - name: Run Tests
         run: |
           cd build
-          ./test_ppp.exe || true
+          ctest --output-on-failure
 
       - name: Package
         shell: pwsh

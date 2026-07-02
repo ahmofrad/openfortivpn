@@ -20,8 +20,10 @@
 #include "userinput.h"
 #include "log.h"
 #include "http_server.h"
+#include "totp.h"
 
 #include <openssl/ssl.h>
+#include <openssl/crypto.h>
 
 #ifndef _WIN32
 #include <unistd.h>
@@ -90,6 +92,7 @@
 "Usage: openfortivpn [<host>[:<port>]] [-u <user>] [-p <pass>]\n" \
 "                    [--cookie=<cookie>] [--cookie-on-stdin] [--saml-login]\n" \
 "                    [--otp=<otp>] [--otp-delay=<delay>] [--otp-prompt=<prompt>]\n" \
+"                    [--otp-seed=<seed>] [--otp-seed-file=<file>]\n" \
 "                    [--pinentry=<program>] [--realm=<realm>]\n" \
 "                    [--ifname=<ifname>] [--set-routes=<0|1>]\n" \
 "                    [--half-internet-routes=<0|1>] [--set-dns=<0|1>]\n" \
@@ -132,6 +135,12 @@ PPPD_USAGE \
 "  -o <otp>, --otp=<otp>         One-Time-Password.\n" \
 "  --otp-prompt=<prompt>         Search for the OTP prompt starting with this string.\n" \
 "  --otp-delay=<delay>           Wait <delay> seconds before sending the OTP.\n" \
+"  --otp-seed=<seed>             Base32 (RFC 4648) TOTP seed. Generates the OTP\n" \
+"                                automatically (RFC 6238, 30s, 6 digits, SHA1).\n" \
+"                                Use 'env:VAR' to read the seed from an environment\n" \
+"                                variable and avoid exposing it in the process list.\n" \
+"  --otp-seed-file=<file>        Read the Base32 TOTP seed from the first line of\n" \
+"                                <file>. Takes precedence over --otp-seed.\n" \
 "  --no-ftm-push                 Do not use FTM push if the server provides the option.\n" \
 "  --pinentry=<program>          Use the program to supply a secret instead of asking for it.\n" \
 "  --realm=<realm>               Use specified authentication realm.\n" \
@@ -304,6 +313,8 @@ int main(int argc, char *argv[])
 		{"otp",                  required_argument, NULL, 'o'},
 		{"otp-prompt",           required_argument, NULL, 0},
 		{"otp-delay",            required_argument, NULL, 0},
+		{"otp-seed",             required_argument, NULL, 0},
+		{"otp-seed-file",        required_argument, NULL, 0},
 		{"no-ftm-push",          no_argument, &cli_cfg.no_ftm_push, 1},
 		{"ifname",               required_argument, NULL, 0},
 		{"set-routes",	         required_argument, NULL, 0},
@@ -519,12 +530,24 @@ int main(int argc, char *argv[])
 				}
 				break;
 			}
-			if (strcmp(long_options[option_index].name,
-			           "otp-prompt") == 0) {
-				free(cli_cfg.otp_prompt);
-				cli_cfg.otp_prompt = strdup(optarg);
-				break;
-			}
+		if (strcmp(long_options[option_index].name,
+		           "otp-prompt") == 0) {
+			free(cli_cfg.otp_prompt);
+			cli_cfg.otp_prompt = strdup(optarg);
+			break;
+		}
+		if (strcmp(long_options[option_index].name,
+		           "otp-seed") == 0) {
+			free(cli_cfg.otp_seed);
+			cli_cfg.otp_seed = resolve_otp_seed(optarg);
+			break;
+		}
+		if (strcmp(long_options[option_index].name,
+		           "otp-seed-file") == 0) {
+			free(cli_cfg.otp_seed_file);
+			cli_cfg.otp_seed_file = strdup(optarg);
+			break;
+		}
 			if (strcmp(long_options[option_index].name,
 			           "ifname") == 0) {
 				strncpy(cli_cfg.iface_name, optarg, IF_NAMESIZE - 1);
@@ -701,6 +724,20 @@ int main(int argc, char *argv[])
 
 	// Then apply CLI configuration
 	merge_config(&cfg, &cli_cfg);
+
+	// If an otp-seed-file is set, read the seed from it (takes precedence
+	// over a direct otp-seed value).
+	if (cfg.otp_seed_file != NULL) {
+		char *seed = read_otp_seed_file(cfg.otp_seed_file);
+		if (seed != NULL) {
+			if (cfg.otp_seed != NULL) {
+				OPENSSL_cleanse(cfg.otp_seed, strlen(cfg.otp_seed));
+				free(cfg.otp_seed);
+			}
+			cfg.otp_seed = seed;
+		}
+	}
+
 	set_syslog(cfg.use_syslog);
 
 	// Set default UA
@@ -758,6 +795,8 @@ int main(int argc, char *argv[])
 	log_debug_all("Configuration password = \"%s\"\n", cfg.password);
 	if (cfg.otp[0] != '\0')
 		log_debug("One-time password = \"%s\"\n", cfg.otp);
+	if (cfg.otp_seed != NULL)
+		log_debug("OTP seed configured (will generate TOTP automatically)\n");
 
 #ifdef _WIN32
 	{

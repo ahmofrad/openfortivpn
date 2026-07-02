@@ -16,6 +16,7 @@ set(COMMON_SOURCES
     src/config.c
     src/hdlc.c
     src/http.c
+    src/totp.c
     src/xml.c
 )
 
@@ -265,6 +266,15 @@ if(BUILD_TESTING)
         )
     endif()
     add_test(NAME ppp_state_machine COMMAND test_ppp)
+
+    # TOTP unit tests
+    add_executable(test_totp
+        tests/test_totp.c
+        src/totp.c
+    )
+    target_include_directories(test_totp PRIVATE ${CMAKE_SOURCE_DIR}/src)
+    target_link_libraries(test_totp PRIVATE OpenSSL::SSL OpenSSL::Crypto)
+    add_test(NAME totp COMMAND test_totp)
 endif()
 
 # Install target

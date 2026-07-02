@@ -28,9 +28,11 @@
 
 #include "config.h"
 #include "log.h"
+#include "totp.h"
 
 #include <openssl/x509.h>  /* work around OpenSSL bug: missing definition of STACK_OF */
 #include <openssl/tls1.h>
+#include <openssl/crypto.h>
 
 #include <ctype.h>
 #include <limits.h>
@@ -51,6 +53,8 @@ const struct vpn_config invalid_cfg = {
 	.otp_prompt = NULL,
 	.otp_delay = -1,
 	.no_ftm_push = -1,
+	.otp_seed = NULL,
+	.otp_seed_file = NULL,
 	.pinentry = NULL,
 	.realm = {'\0'},
 	.iface_name = {'\0'},
@@ -275,6 +279,12 @@ int load_config(struct vpn_config *cfg, const char *filename)
 				continue;
 			}
 			cfg->otp_delay = otp_delay;
+		} else if (strcmp(key, "otp-seed") == 0) {
+			free(cfg->otp_seed);
+			cfg->otp_seed = resolve_otp_seed(val);
+		} else if (strcmp(key, "otp-seed-file") == 0) {
+			free(cfg->otp_seed_file);
+			cfg->otp_seed_file = strdup(val);
 		} else if (strcmp(key, "cookie") == 0) {
 			log_warn("Ignoring option \"%s\" in the config file.\n", key);
 		} else if (strcmp(key, "cookie-on-stdin") == 0) {
@@ -497,6 +507,11 @@ void destroy_vpn_config(struct vpn_config *cfg)
 	free(cfg->otp_prompt);
 	free(cfg->pinentry);
 	free(cfg->cookie);
+	if (cfg->otp_seed != NULL) {
+		OPENSSL_cleanse(cfg->otp_seed, strlen(cfg->otp_seed));
+		free(cfg->otp_seed);
+	}
+	free(cfg->otp_seed_file);
 #if HAVE_USR_SBIN_PPPD || defined(_WIN32)
 	free(cfg->pppd_log);
 	free(cfg->pppd_plugin);
@@ -540,6 +555,17 @@ void merge_config(struct vpn_config *dst, struct vpn_config *src)
 		dst->otp_delay = src->otp_delay;
 	if (src->no_ftm_push != invalid_cfg.no_ftm_push)
 		dst->no_ftm_push = src->no_ftm_push;
+	if (src->otp_seed != NULL) {
+		if (dst->otp_seed != NULL) {
+			OPENSSL_cleanse(dst->otp_seed, strlen(dst->otp_seed));
+			free(dst->otp_seed);
+		}
+		dst->otp_seed = src->otp_seed;
+	}
+	if (src->otp_seed_file != NULL) {
+		free(dst->otp_seed_file);
+		dst->otp_seed_file = src->otp_seed_file;
+	}
 	if (src->cookie != invalid_cfg.cookie) {
 		free(dst->cookie);
 		dst->cookie = src->cookie;

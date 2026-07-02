@@ -21,6 +21,7 @@
 #include "ipv4.h"
 #include "userinput.h"
 #include "log.h"
+#include "totp.h"
 
 #include <unistd.h>
 #include <arpa/inet.h>
@@ -464,6 +465,30 @@ static void delay_otp(struct tunnel *tunnel)
 }
 
 
+/*
+ * Ensure an OTP value is present in cfg->otp.
+ *
+ * Precedence:
+ *   1. an explicit --otp value (already in cfg->otp) wins;
+ *   2. otherwise, if a TOTP seed is configured, generate one;
+ *   3. otherwise return 0 so the caller can prompt the user.
+ *
+ * Returns 1 if cfg->otp is now populated, 0 if the caller should prompt.
+ */
+static int ensure_otp(struct vpn_config *cfg)
+{
+	if (cfg->otp[0] != '\0')
+		return 1;
+	if (cfg->otp_seed == NULL)
+		return 0;
+	if (totp_generate(cfg->otp_seed, cfg->otp, OTP_SIZE) == 0)
+		return 1;
+	log_error("Failed to generate TOTP from otp-seed.\n");
+	cfg->otp[0] = '\0';
+	return 0;
+}
+
+
 static int try_otp_auth(struct tunnel *tunnel, const char *buffer,
                         char **res, uint32_t *response_size)
 {
@@ -582,7 +607,7 @@ static int try_otp_auth(struct tunnel *tunnel, const char *buffer,
 			size_t l;
 
 			v = NULL;
-			if (cfg->otp[0] == '\0') {
+			if (!ensure_otp(cfg)) {
 				// Interactively ask user for OTP
 				char hint[USERNAME_SIZE + 1 + REALM_SIZE + 1 + GATEWAY_HOST_SIZE + 5];
 
@@ -784,7 +809,7 @@ int auth_log_in(struct tunnel *tunnel)
 		get_value_from_response(res, "magic=", magic, 32);
 		get_value_from_response(res, "peer=", peer, 32);
 
-		if (cfg->otp[0] == '\0' &&
+		if (cfg->otp[0] == '\0' && cfg->otp_seed == NULL &&
 		    strncmp(token, "ftm_push", 8) == 0 &&
 		    cfg->no_ftm_push == 0) {
 			/*
@@ -794,7 +819,7 @@ int auth_log_in(struct tunnel *tunnel)
 			 */
 			snprintf(tokenparams, sizeof(tokenparams), "ftmpush=1");
 		} else {
-			if (cfg->otp[0] == '\0') {
+			if (!ensure_otp(cfg)) {
 				// Interactively ask user for 2FA token
 				char hint[USERNAME_SIZE + 1 + REALM_SIZE + 1 + GATEWAY_HOST_SIZE + 5];
 
@@ -824,6 +849,7 @@ int auth_log_in(struct tunnel *tunnel)
 		delay_otp(tunnel);
 		ret = http_request(tunnel, "POST", "/remote/logincheck",
 		                   data, &res, &response_size);
+		memset(tunnel->config->otp, '\0', OTP_SIZE + 1); // clear OTP for next run
 		if (ret != 1)
 			goto end;
 
