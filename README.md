@@ -50,6 +50,22 @@ Examples
   openfortivpn vpn-gateway:8443 -u foo --no-routes --no-dns --pppd-no-peerdns
   ```
 
+* Connect with automatic TOTP generation from a Base32 seed:
+  ```shell
+  openfortivpn vpn-gateway:8443 -u foo --otp-seed=GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ
+  ```
+
+* Read the TOTP seed from an environment variable (avoids exposing it in `ps`):
+  ```shell
+  OPENFORTIVPN_OTP_SEED=GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ \
+    openfortivpn vpn-gateway:8443 -u foo --otp-seed=env:OPENFORTIVPN_OTP_SEED
+  ```
+
+* Read the TOTP seed from a file (recommended for security):
+  ```shell
+  openfortivpn vpn-gateway:8443 -u foo --otp-seed-file=/etc/openfortivpn/otp-seed
+  ```
+
 * Using a configuration file:
   ```shell
   openfortivpn -c /etc/openfortivpn/my-config
@@ -62,6 +78,12 @@ Examples
   username = foo
   set-dns = 0
   pppd-use-peerdns = 0
+  # Generate OTP automatically from a Base32 TOTP seed (RFC 6238)
+  otp-seed = GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ
+  # Or read the seed from a file:
+  # otp-seed-file = /etc/openfortivpn/otp-seed
+  # Or from an environment variable:
+  # otp-seed = env:OPENFORTIVPN_OTP_SEED
   # X509 certificate sha256 sum, trust only this one!
   trusted-cert = e46d4aff08ba6914e64daa85bc6112a422fa7ce16631bff0b592a28556f993db
   ```
@@ -70,6 +92,26 @@ Examples
   ```shell
   man openfortivpn
   ```
+
+OTP / TOTP
+----------
+
+openfortivpn supports several ways to provide a One-Time-Password:
+
+* **`--otp=<code>`** — supply a pre-generated OTP code directly.
+* **`--otp-seed=<base32>`** — supply a Base32 (RFC 4648) TOTP seed. The OTP is
+  generated automatically using RFC 6238 (HMAC-SHA1, 30-second step, 6 digits),
+  matching FortiToken Mobile and common authenticator apps. Use the `env:VAR`
+  prefix to read the seed from an environment variable and avoid exposing it in
+  the process list or config files.
+* **`--otp-seed-file=<path>`** — read the Base32 TOTP seed from the first
+  non-empty line of a file. This is the most secure option as it keeps the seed
+  out of both `ps` output and configuration files. Takes precedence over
+  `--otp-seed`.
+
+**Precedence:** `--otp` (explicit code) > `--otp-seed-file` > `--otp-seed` >
+interactive prompt. When a seed is configured, FTM push is skipped so a code is
+always generated.
 
 Smartcard
 ---------
@@ -151,6 +193,18 @@ in-process.
 * Administrator privileges (for TUN adapter and route management)
 * [wintun.dll](https://www.wintun.net/) in the same directory as `openfortivpn.exe`
   or in the system PATH
+
+**Quick start with pre-built binaries:**
+
+1. Download `openfortivpn-windows-x64.zip` from the
+   [GitHub Releases](https://github.com/ahmofrad/openfortivpn/releases) page.
+2. Extract the zip file.
+3. Download `wintun.dll` from https://www.wintun.net/ and place it in the
+   same directory as `openfortivpn.exe`.
+4. Run from an **Administrator** command prompt:
+   ```shell
+   openfortivpn vpn-gateway:8443 --username=foo
+   ```
 
 **Building with MinGW-w64 (MSYS2):**
 
