@@ -26,6 +26,9 @@
 #include <iphlpapi.h>
 #include <io.h>
 #include <process.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 
 /* POSIX type compatibility */
 #ifndef ssize_t
@@ -125,6 +128,51 @@ static inline ssize_t getline(char **lineptr, size_t *n, FILE *stream)
 
 	(*lineptr)[pos] = '\0';
 	return (ssize_t)pos;
+}
+
+/* memmem() replacement for MinGW (GNU extension, not in C standard) */
+static inline void *memmem(const void *haystack, size_t haystacklen,
+                           const void *needle, size_t needlelen)
+{
+	const char *h = haystack;
+	const char *n = needle;
+	size_t i;
+
+	if (needlelen == 0)
+		return (void *)haystack;
+	if (needlelen > haystacklen)
+		return NULL;
+
+	for (i = 0; i <= haystacklen - needlelen; i++) {
+		if (memcmp(h + i, n, needlelen) == 0)
+			return (void *)(h + i);
+	}
+	return NULL;
+}
+
+/* strcasestr() replacement for MinGW (GNU extension, not in C standard) */
+static inline char *strcasestr(const char *haystack, const char *needle)
+{
+	size_t hlen = strlen(haystack);
+	size_t nlen = strlen(needle);
+	size_t i;
+
+	if (nlen == 0)
+		return (char *)haystack;
+	if (nlen > hlen)
+		return NULL;
+
+	for (i = 0; i <= hlen - nlen; i++) {
+		size_t j;
+		for (j = 0; j < nlen; j++) {
+			if (tolower((unsigned char)haystack[i + j]) !=
+			    tolower((unsigned char)needle[j]))
+				break;
+		}
+		if (j == nlen)
+			return (char *)(haystack + i);
+	}
+	return NULL;
 }
 
 /* Initialize Winsock - call once at startup */
