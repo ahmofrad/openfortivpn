@@ -164,6 +164,7 @@ static inline char *strcasestr(const char *haystack, const char *needle)
 
 	for (i = 0; i <= hlen - nlen; i++) {
 		size_t j;
+
 		for (j = 0; j < nlen; j++) {
 			if (tolower((unsigned char)haystack[i + j]) !=
 			    tolower((unsigned char)needle[j]))
