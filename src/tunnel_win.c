@@ -50,7 +50,7 @@
 /* Forward declaration */
 extern void ipv4_win_set_tun_luid(NET_LUID *luid);
 
-static struct wintun_api wt_api;
+struct wintun_api wt_api;
 static int wt_api_loaded;
 
 /*
