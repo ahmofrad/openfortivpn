@@ -530,24 +530,24 @@ int main(int argc, char *argv[])
 				}
 				break;
 			}
-		if (strcmp(long_options[option_index].name,
-		           "otp-prompt") == 0) {
-			free(cli_cfg.otp_prompt);
-			cli_cfg.otp_prompt = strdup(optarg);
-			break;
-		}
-		if (strcmp(long_options[option_index].name,
-		           "otp-seed") == 0) {
-			free(cli_cfg.otp_seed);
-			cli_cfg.otp_seed = resolve_otp_seed(optarg);
-			break;
-		}
-		if (strcmp(long_options[option_index].name,
-		           "otp-seed-file") == 0) {
-			free(cli_cfg.otp_seed_file);
-			cli_cfg.otp_seed_file = strdup(optarg);
-			break;
-		}
+			if (strcmp(long_options[option_index].name,
+			           "otp-prompt") == 0) {
+				free(cli_cfg.otp_prompt);
+				cli_cfg.otp_prompt = strdup(optarg);
+				break;
+			}
+			if (strcmp(long_options[option_index].name,
+			           "otp-seed") == 0) {
+				free(cli_cfg.otp_seed);
+				cli_cfg.otp_seed = resolve_otp_seed(optarg);
+				break;
+			}
+			if (strcmp(long_options[option_index].name,
+			           "otp-seed-file") == 0) {
+				free(cli_cfg.otp_seed_file);
+				cli_cfg.otp_seed_file = strdup(optarg);
+				break;
+			}
 			if (strcmp(long_options[option_index].name,
 			           "ifname") == 0) {
 				strncpy(cli_cfg.iface_name, optarg, IF_NAMESIZE - 1);

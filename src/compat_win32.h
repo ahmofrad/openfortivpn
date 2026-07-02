@@ -36,8 +36,11 @@ typedef int ssize_t;
 #endif
 #endif
 
+#ifndef _PID_T_
+#define _PID_T_
 typedef int pid_t;
-typedef unsigned int uid_t;
+#endif
+	typedef unsigned int uid_t;
 
 /* File descriptor compatibility */
 #define STDIN_FILENO  0

@@ -270,7 +270,7 @@ int ipv4_restore_routes(struct tunnel *tunnel)
 
 			/* Delete 128.0.0.0/1 route */
 			row.DestinationPrefix.Prefix.Ipv4.sin_addr.s_addr =
-				htonl(0x80000000);
+			        htonl(0x80000000);
 			del_route(&row);
 		} else {
 			/* Delete default route through VPN */
@@ -290,14 +290,14 @@ int ipv4_restore_routes(struct tunnel *tunnel)
 		InitializeIpForwardEntry(&row);
 		row.DestinationPrefix.Prefix.Ipv4.sin_family = AF_INET;
 		row.DestinationPrefix.Prefix.Ipv4.sin_addr =
-			tunnel->config->gateway_ip;
+		        tunnel->config->gateway_ip;
 		row.DestinationPrefix.PrefixLength = 32;
 		if (saved_default_route.valid) {
 			row.InterfaceLuid =
-				saved_default_route.row.InterfaceLuid;
+			        saved_default_route.row.InterfaceLuid;
 			row.NextHop.Ipv4.sin_family = AF_INET;
 			row.NextHop.Ipv4.sin_addr =
-				saved_default_route.row.NextHop.Ipv4.sin_addr;
+			        saved_default_route.row.NextHop.Ipv4.sin_addr;
 		}
 		del_route(&row);
 		tunnel->ipv4.route_to_vpn_is_added = 0;

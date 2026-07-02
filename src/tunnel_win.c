@@ -123,8 +123,8 @@ static int wintun_configure_ip(struct tunnel *tunnel)
 	char ip_str[INET_ADDRSTRLEN];
 
 	wt_api.GetAdapterLUID(
-		wt_api.CreateAdapter ? (WINTUN_ADAPTER_HANDLE)NULL : NULL,
-		&luid);
+	        wt_api.CreateAdapter ? (WINTUN_ADAPTER_HANDLE)NULL : NULL,
+	        &luid);
 
 	/* We already have the LUID from creation */
 	/* Re-fetch it from the adapter stored in tunnel */
@@ -406,7 +406,7 @@ static int get_gateway_host_ip(struct tunnel *tunnel)
 	}
 
 	tunnel->config->gateway_ip =
-		((struct sockaddr_in *)result->ai_addr)->sin_addr;
+	        ((struct sockaddr_in *)result->ai_addr)->sin_addr;
 	freeaddrinfo(result);
 
 	{

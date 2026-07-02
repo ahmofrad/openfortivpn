@@ -34,13 +34,13 @@
 #define HTTP_BUF_SIZE 8192
 
 static const char http_response[] =
-	"HTTP/1.1 200 OK\r\n"
-	"Content-Type: text/html\r\n"
-	"Connection: close\r\n\r\n"
-	"<html><body>"
-	"<h1>Authentication successful</h1>"
-	"<p>You can close this window and return to the terminal.</p>"
-	"</body></html>";
+        "HTTP/1.1 200 OK\r\n"
+        "Content-Type: text/html\r\n"
+        "Connection: close\r\n\r\n"
+        "<html><body>"
+        "<h1>Authentication successful</h1>"
+        "<p>You can close this window and return to the terminal.</p>"
+        "</body></html>";
 
 /*
  * Parse SAML cookie and session ID from the HTTP GET request.

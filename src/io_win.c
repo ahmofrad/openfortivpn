@@ -414,7 +414,7 @@ int io_loop(struct tunnel *tunnel)
 	/* Start PPP negotiation */
 	{
 		struct ppp_context *ppp_ctx =
-			(struct ppp_context *)tunnel->ppp_ctx;
+		        (struct ppp_context *)tunnel->ppp_ctx;
 		uint8_t *start_pkt;
 		size_t start_len;
 

@@ -6,12 +6,11 @@ PREFIX="$1"
 
 [ -x "${PREFIX}/bin/openssl" ] && exit 0
 
-VERSION=1.0.2u
-SRC="https://www.openssl.org/source/old/1.0.2/openssl-${VERSION}.tar.gz"
+# OpenSSL 1.0.2u source tarball is no longer available at openssl.org.
+# Use the system libssl-dev instead of building from source.
+if pkg-config --exists openssl; then
+    exit 0
+fi
 
-wget -O openssl.tar.gz "$SRC"
-tar -xf openssl.tar.gz -C "$HOME"
-cd "${HOME}/openssl-${VERSION}"
-./config --prefix="$PREFIX" shared -fPIC
-make
-make install
+sudo apt-get update
+sudo apt-get install -y libssl-dev

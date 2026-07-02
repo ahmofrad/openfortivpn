@@ -16,23 +16,15 @@
  */
 
 #include "totp.h"
-#include "log.h"
 
 #include <openssl/hmac.h>
 #include <openssl/crypto.h>
 
-#include <ctype.h>
 #include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
-
-#ifdef _WIN32
-#include "compat_win32.h"
-#else
-#include <unistd.h>
-#endif
 
 static const int8_t b32tab[256] = {
 	['A'] = 0,  ['B'] = 1,  ['C'] = 2,  ['D'] = 3,
@@ -106,7 +98,7 @@ static int totp_generate_at_impl(const char *base32_seed, int64_t now,
 
 	keylen = base32_decode(base32_seed, key, sizeof(key));
 	if (keylen <= 0) {
-		log_error("otp-seed is not valid Base32.\n");
+		fprintf(stderr, "otp-seed is not valid Base32.\n");
 		return -1;
 	}
 
@@ -119,7 +111,7 @@ static int totp_generate_at_impl(const char *base32_seed, int64_t now,
 	if (HMAC(EVP_sha1(), key, keylen, counter_be, 8, md, &md_len) == NULL
 	    || md_len < 20) {
 		OPENSSL_cleanse(key, (size_t)keylen);
-		log_error("HMAC-SHA1 failed while generating TOTP.\n");
+		fprintf(stderr, "HMAC-SHA1 failed while generating TOTP.\n");
 		return -1;
 	}
 
@@ -161,13 +153,13 @@ char *resolve_otp_seed(const char *spec)
 		char *val;
 
 		if (var[0] == '\0') {
-			log_error("otp-seed: missing variable name after 'env:'.\n");
+			fprintf(stderr, "otp-seed: missing variable name after 'env:'.\n");
 			return NULL;
 		}
 		val = getenv(var);
 		if (val == NULL || val[0] == '\0') {
-			log_error("otp-seed: environment variable '%s' is not set or empty.\n",
-			          var);
+			fprintf(stderr, "otp-seed: environment variable '%s' is not set or empty.\n",
+			        var);
 			return NULL;
 		}
 		return strdup(val);
@@ -188,8 +180,8 @@ char *read_otp_seed_file(const char *path)
 
 	f = fopen(path, "r");
 	if (f == NULL) {
-		log_error("otp-seed-file: cannot open '%s': %s\n",
-		          path, strerror(errno));
+		fprintf(stderr, "otp-seed-file: cannot open '%s': %s\n",
+		        path, strerror(errno));
 		return NULL;
 	}
 
@@ -214,6 +206,6 @@ char *read_otp_seed_file(const char *path)
 
 	fclose(f);
 	if (result == NULL)
-		log_error("otp-seed-file: '%s' contains no seed.\n", path);
+		fprintf(stderr, "otp-seed-file: '%s' contains no seed.\n", path);
 	return result;
 }
