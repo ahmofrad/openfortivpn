@@ -43,6 +43,17 @@ struct win_route {
 	int valid;
 };
 
+static inline int route_init(struct rtentry *route)
+{
+	memset(route, 0, sizeof(*route));
+
+	cast_addr(&(route)->rt_dst)->sin_family = AF_INET;
+	cast_addr(&(route)->rt_genmask)->sin_family = AF_INET;
+	cast_addr(&(route)->rt_gateway)->sin_family = AF_INET;
+
+	return 0;
+}
+
 static struct win_route saved_default_route;
 static struct win_route vpn_gateway_route;
 static NET_LUID tun_luid;
@@ -158,20 +169,40 @@ int ipv4_add_split_vpn_route(struct tunnel *tunnel, char *dest, char *mask,
 {
 	struct in_addr dest_addr, mask_addr, gw_addr;
 
-	(void)tunnel;
-
 	inet_pton(AF_INET, dest, &dest_addr);
 	inet_pton(AF_INET, mask, &mask_addr);
 	inet_pton(AF_INET, gateway, &gw_addr);
 
 	log_info("Adding split route: %s/%s via %s\n", dest, mask, gateway);
 
-	if (!tun_luid_valid) {
-		log_error("TUN adapter LUID not set.\n");
+	/*
+	 * Store the route for later. Routes are added in ipv4_set_tunnel_routes()
+	 * after the wintun adapter is created and the LUID is available.
+	 */
+	if (tunnel->ipv4.split_routes == MAX_SPLIT_ROUTES)
 		return -1;
+	if ((tunnel->ipv4.split_rt == NULL)
+	    || ((tunnel->ipv4.split_routes % STEP_SPLIT_ROUTES) == 0)) {
+		void *new_ptr
+		        = realloc(tunnel->ipv4.split_rt,
+		                  (size_t)(tunnel->ipv4.split_routes + STEP_SPLIT_ROUTES)
+		                  * sizeof(*(tunnel->ipv4.split_rt)));
+		if (new_ptr == NULL)
+			return -1;
+		tunnel->ipv4.split_rt = new_ptr;
 	}
 
-	return add_route(dest_addr, mask_addr, gw_addr, &tun_luid, 0);
+	{
+		struct rtentry *route = &tunnel->ipv4.split_rt[tunnel->ipv4.split_routes++];
+
+		route_init(route);
+		route_dest(route) = dest_addr;
+		route_mask(route) = mask_addr;
+		route_gtw(route) = gw_addr;
+		route->rt_flags |= RTF_GATEWAY;
+	}
+
+	return 0;
 }
 
 int ipv4_set_tunnel_routes(struct tunnel *tunnel)
@@ -190,9 +221,10 @@ int ipv4_set_tunnel_routes(struct tunnel *tunnel)
 	/* Add route to VPN gateway via existing default route */
 	if (saved_default_route.valid) {
 		struct in_addr saved_gw;
+		NET_LUID *saved_luid = &saved_default_route.row.InterfaceLuid;
 
 		saved_gw = saved_default_route.row.NextHop.Ipv4.sin_addr;
-		ret = add_route(gateway_ip, full_mask, saved_gw, NULL, 0);
+		ret = add_route(gateway_ip, full_mask, saved_gw, saved_luid, 0);
 		if (ret) {
 			log_error("Could not add route to VPN gateway.\n");
 			return ret;
@@ -205,8 +237,18 @@ int ipv4_set_tunnel_routes(struct tunnel *tunnel)
 		return -1;
 	}
 
+	/* Add split routes now that the TUN adapter exists */
 	if (tunnel->ipv4.split_routes > 0) {
-		/* Split routes are handled individually via ipv4_add_split_vpn_route */
+		int i;
+
+		for (i = 0; i < tunnel->ipv4.split_routes; i++) {
+			struct rtentry *r = &tunnel->ipv4.split_rt[i];
+
+			ret = add_route(route_dest(r), route_mask(r),
+			                route_gtw(r), &tun_luid, 0);
+			if (ret)
+				log_warn("Could not add split route.\n");
+		}
 		return 0;
 	}
 
@@ -279,6 +321,32 @@ int ipv4_restore_routes(struct tunnel *tunnel)
 			row.DestinationPrefix.PrefixLength = 0;
 			row.NextHop.Ipv4.sin_family = AF_INET;
 			row.NextHop.Ipv4.sin_addr = tunnel->ipv4.ip_addr;
+			del_route(&row);
+		}
+	}
+
+	/* Remove split routes */
+	if (tun_luid_valid && tunnel->ipv4.split_routes > 0) {
+		int i;
+
+		for (i = 0; i < tunnel->ipv4.split_routes; i++) {
+			struct rtentry *r = &tunnel->ipv4.split_rt[i];
+			MIB_IPFORWARD_ROW2 row;
+			uint32_t m = ntohl(route_mask(r).s_addr);
+			uint8_t prefix_len = 0;
+
+			while (m & 0x80000000) {
+				prefix_len++;
+				m <<= 1;
+			}
+
+			InitializeIpForwardEntry(&row);
+			row.InterfaceLuid = tun_luid;
+			row.DestinationPrefix.Prefix.Ipv4.sin_family = AF_INET;
+			row.DestinationPrefix.Prefix.Ipv4.sin_addr = route_dest(r);
+			row.DestinationPrefix.PrefixLength = prefix_len;
+			row.NextHop.Ipv4.sin_family = AF_INET;
+			row.NextHop.Ipv4.sin_addr = route_gtw(r);
 			del_route(&row);
 		}
 	}
