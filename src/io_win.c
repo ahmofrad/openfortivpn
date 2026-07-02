@@ -45,6 +45,9 @@ static os_semaphore_t sem_ppp_ready;
 static os_semaphore_t sem_if_config;
 static os_semaphore_t sem_stop_io;
 
+/* Reference to the global wintun API function-pointer table */
+extern struct wintun_api wt_api;
+
 /* Global variable to pass signal out of its handler */
 volatile long sig_received;
 
@@ -261,14 +264,13 @@ static void *tun_read_thread(void *arg)
 {
 	struct tunnel *tunnel = (struct tunnel *)arg;
 	WINTUN_SESSION_HANDLE session = (WINTUN_SESSION_HANDLE)tunnel->tun_session;
-	struct wintun_api *api = (struct wintun_api *)tunnel->tun_adapter;
 
 	/* Wait for PPP negotiation to complete */
 	SEM_WAIT(&sem_ppp_ready);
 
 	log_debug("%s thread\n", __func__);
 
-	HANDLE read_event = api->GetReadWaitEvent(session);
+	HANDLE read_event = wt_api.GetReadWaitEvent(session);
 
 	while (1) {
 		DWORD pkt_size;
@@ -277,7 +279,7 @@ static void *tun_read_thread(void *arg)
 		/* Wait for a packet to be available */
 		WaitForSingleObject(read_event, INFINITE);
 
-		while ((pkt = api->ReceivePacket(session, &pkt_size)) != NULL) {
+		while ((pkt = wt_api.ReceivePacket(session, &pkt_size)) != NULL) {
 			uint8_t *ppp_data;
 			size_t ppp_len;
 			struct ppp_packet *packet;
@@ -296,7 +298,7 @@ static void *tun_read_thread(void *arg)
 				free(ppp_data);
 			}
 
-			api->ReleaseReceivePacket(session, pkt);
+			wt_api.ReleaseReceivePacket(session, pkt);
 		}
 	}
 
@@ -311,7 +313,6 @@ static void *tun_write_thread(void *arg)
 {
 	struct tunnel *tunnel = (struct tunnel *)arg;
 	WINTUN_SESSION_HANDLE session = (WINTUN_SESSION_HANDLE)tunnel->tun_session;
-	struct wintun_api *api = (struct wintun_api *)tunnel->tun_adapter;
 
 	/* Wait for PPP negotiation to complete */
 	SEM_WAIT(&sem_ppp_ready);
@@ -324,10 +325,10 @@ static void *tun_write_thread(void *arg)
 
 		packet = pool_pop(&tunnel->ssl_to_pty_pool);
 
-		buf = api->AllocateSendPacket(session, (DWORD)packet->len);
+		buf = wt_api.AllocateSendPacket(session, (DWORD)packet->len);
 		if (buf) {
 			memcpy(buf, pkt_data(packet), packet->len);
-			api->SendPacket(session, buf);
+			wt_api.SendPacket(session, buf);
 			log_debug("gateway ---> tun write (%lu bytes)\n",
 			          (unsigned long)packet->len);
 		} else {

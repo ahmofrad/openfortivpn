@@ -101,11 +101,11 @@ static int wintun_create(struct tunnel *tunnel)
 
 	/*
 	 * Store handles in tunnel struct.
-	 * tun_adapter stores a pointer to the static wt_api struct
-	 * (which contains the function pointers AND the adapter handle),
+	 * tun_adapter stores the WINTUN_ADAPTER_HANDLE for later use
+	 * (e.g. GetAdapterLUID, CloseAdapter).
 	 * tun_session stores the session handle.
 	 */
-	tunnel->tun_adapter = (void *)&wt_api;
+	tunnel->tun_adapter = (void *)adapter;
 	tunnel->tun_session = (void *)session;
 
 	log_info("Wintun adapter created.\n");
@@ -122,12 +122,12 @@ static int wintun_configure_ip(struct tunnel *tunnel)
 	DWORD ret;
 	char ip_str[INET_ADDRSTRLEN];
 
+	/* Re-fetch the LUID from the stored adapter handle */
 	wt_api.GetAdapterLUID(
-	        wt_api.CreateAdapter ? (WINTUN_ADAPTER_HANDLE)NULL : NULL,
+	        (WINTUN_ADAPTER_HANDLE)tunnel->tun_adapter,
 	        &luid);
-
-	/* We already have the LUID from creation */
-	/* Re-fetch it from the adapter stored in tunnel */
+	/* Update the global LUID in case it changed */
+	ipv4_win_set_tun_luid(&luid);
 
 	/* Use netsh to set the IP address (most reliable approach) */
 	inet_ntop(AF_INET, &tunnel->ipv4.ip_addr, ip_str, sizeof(ip_str));
@@ -160,8 +160,10 @@ static void wintun_destroy(struct tunnel *tunnel)
 		tunnel->tun_session = NULL;
 	}
 
-	/* Close adapter - remove it from Windows */
-	/* Note: adapter handle is managed via wt_api, not stored separately */
+	if (tunnel->tun_adapter) {
+		wt_api.CloseAdapter((WINTUN_ADAPTER_HANDLE)tunnel->tun_adapter);
+		tunnel->tun_adapter = NULL;
+	}
 
 	log_info("Wintun adapter destroyed.\n");
 }
