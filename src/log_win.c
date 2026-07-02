@@ -64,7 +64,7 @@ void init_logging(void)
 	}
 
 	if (!use_colors)
-		use_colors = _isatty(_fileno(stdout));
+		use_colors = is_console(stdout);
 }
 
 void set_syslog(int do_syslog)
