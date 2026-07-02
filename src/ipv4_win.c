@@ -199,7 +199,6 @@ int ipv4_add_split_vpn_route(struct tunnel *tunnel, char *dest, char *mask,
 		route_dest(route) = dest_addr;
 		route_mask(route) = mask_addr;
 		route_gtw(route) = gw_addr;
-		route->rt_flags |= RTF_GATEWAY;
 	}
 
 	return 0;
