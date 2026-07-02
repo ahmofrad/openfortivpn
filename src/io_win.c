@@ -38,6 +38,7 @@
 typedef HANDLE os_semaphore_t;
 #define SEM_INIT(sem, x, value) (*(sem) = CreateSemaphore(NULL, value, LONG_MAX, NULL))
 #define SEM_WAIT(sem)           WaitForSingleObject(*(sem), INFINITE)
+#define SEM_TIMED_WAIT(sem, ms) WaitForSingleObject(*(sem), (ms))
 #define SEM_POST(sem)           ReleaseSemaphore(*(sem), 1, NULL)
 #define SEM_DESTROY(sem)        CloseHandle(*(sem))
 
@@ -47,6 +48,9 @@ static os_semaphore_t sem_stop_io;
 
 /* Reference to the global wintun API function-pointer table */
 extern struct wintun_api wt_api;
+
+/* Flag to tell threads to exit */
+static volatile long io_stopping;
 
 /* Global variable to pass signal out of its handler */
 volatile long sig_received;
@@ -75,6 +79,14 @@ static void pool_push(struct ppp_packet_pool *pool, struct ppp_packet *new)
 {
 	struct ppp_packet *current;
 
+	if (new == NULL) {
+		/* Wake up any thread blocked in pool_pop so it can check io_stopping */
+		pthread_mutex_lock(&pool->mutex);
+		pthread_cond_broadcast(&pool->new_data);
+		pthread_mutex_unlock(&pool->mutex);
+		return;
+	}
+
 	pthread_mutex_lock(&pool->mutex);
 
 	new->next = NULL;
@@ -94,10 +106,18 @@ static void pool_push(struct ppp_packet_pool *pool, struct ppp_packet *new)
 static struct ppp_packet *pool_pop(struct ppp_packet_pool *pool)
 {
 	struct ppp_packet *packet;
+	struct timespec ts;
 
 	pthread_mutex_lock(&pool->mutex);
-	while (pool->list_head == NULL)
-		pthread_cond_wait(&pool->new_data, &pool->mutex);
+	while (pool->list_head == NULL) {
+		if (io_stopping) {
+			pthread_mutex_unlock(&pool->mutex);
+			return NULL;
+		}
+		clock_gettime(CLOCK_REALTIME, &ts);
+		ts.tv_sec += 1;
+		pthread_cond_timedwait(&pool->new_data, &pool->mutex, &ts);
+	}
 	packet = pool->list_head;
 	pool->list_head = packet->next;
 	pthread_mutex_unlock(&pool->mutex);
@@ -117,7 +137,7 @@ static void *ssl_read_thread(void *arg)
 
 	log_debug("%s thread\n", __func__);
 
-	while (1) {
+	while (!io_stopping) {
 		uint8_t header[6];
 		uint16_t total, magic, size;
 		int ret;
@@ -128,8 +148,9 @@ static void *ssl_read_thread(void *arg)
 
 		ret = safe_ssl_read_all(tunnel->ssl_handle, header, 6);
 		if (ret < 0) {
-			log_debug("Error reading from TLS (%s).\n",
-			          err_ssl_str(ret));
+			if (!io_stopping)
+				log_debug("Error reading from TLS (%s).\n",
+				          err_ssl_str(ret));
 			break;
 		}
 
@@ -224,11 +245,13 @@ static void *ssl_write_thread(void *arg)
 
 	log_debug("%s thread\n", __func__);
 
-	while (1) {
+	while (!io_stopping) {
 		struct ppp_packet *packet;
 		int ret;
 
 		packet = pool_pop(&tunnel->pty_to_ssl_pool);
+		if (packet == NULL)
+			break;
 
 		/* Build the 6-byte Fortinet header */
 		pkt_header(packet)[0] = (6 + packet->len) >> 8;
@@ -266,18 +289,23 @@ static void *tun_read_thread(void *arg)
 	WINTUN_SESSION_HANDLE session = (WINTUN_SESSION_HANDLE)tunnel->tun_session;
 
 	/* Wait for PPP negotiation to complete */
-	SEM_WAIT(&sem_ppp_ready);
+	while (!io_stopping) {
+		if (SEM_TIMED_WAIT(&sem_ppp_ready, 500) == WAIT_OBJECT_0)
+			break;
+	}
+	if (io_stopping)
+		return NULL;
 
 	log_debug("%s thread\n", __func__);
 
 	HANDLE read_event = wt_api.GetReadWaitEvent(session);
 
-	while (1) {
+	while (!io_stopping) {
 		DWORD pkt_size;
 		BYTE *pkt;
 
-		/* Wait for a packet to be available */
-		WaitForSingleObject(read_event, INFINITE);
+		/* Wait for a packet to be available (poll so we can check io_stopping) */
+		WaitForSingleObject(read_event, 500);
 
 		while ((pkt = wt_api.ReceivePacket(session, &pkt_size)) != NULL) {
 			uint8_t *ppp_data;
@@ -315,15 +343,22 @@ static void *tun_write_thread(void *arg)
 	WINTUN_SESSION_HANDLE session = (WINTUN_SESSION_HANDLE)tunnel->tun_session;
 
 	/* Wait for PPP negotiation to complete */
-	SEM_WAIT(&sem_ppp_ready);
+	while (!io_stopping) {
+		if (SEM_TIMED_WAIT(&sem_ppp_ready, 500) == WAIT_OBJECT_0)
+			break;
+	}
+	if (io_stopping)
+		return NULL;
 
 	log_debug("%s thread\n", __func__);
 
-	while (1) {
+	while (!io_stopping) {
 		struct ppp_packet *packet;
 		BYTE *buf;
 
 		packet = pool_pop(&tunnel->ssl_to_pty_pool);
+		if (packet == NULL)
+			break;
 
 		buf = wt_api.AllocateSendPacket(session, (DWORD)packet->len);
 		if (buf) {
@@ -353,14 +388,20 @@ static void *if_config_thread(void *arg)
 	log_debug("%s thread\n", __func__);
 
 	/* Wait for IPCP negotiation to complete */
-	SEM_WAIT(&sem_if_config);
+	while (!io_stopping) {
+		if (SEM_TIMED_WAIT(&sem_if_config, 500) == WAIT_OBJECT_0)
+			break;
+	}
+
+	if (io_stopping)
+		return NULL;
 
 	/* Signal tun_read and tun_write that PPP is ready */
 	SEM_POST(&sem_ppp_ready);
 	SEM_POST(&sem_ppp_ready); /* Post twice for two waiting threads */
 
 	/* Wait for the TUN interface to be up */
-	while (timeout > 0) {
+	while (timeout > 0 && !io_stopping) {
 		if (ppp_interface_is_up(tunnel)) {
 			if (tunnel->on_ppp_if_up != NULL)
 				if (tunnel->on_ppp_if_up(tunnel))
@@ -398,6 +439,7 @@ int io_loop(struct tunnel *tunnel)
 	SEM_INIT(&sem_ppp_ready, 0, 0);
 	SEM_INIT(&sem_if_config, 0, 0);
 	SEM_INIT(&sem_stop_io, 0, 0);
+	InterlockedExchange(&io_stopping, 0);
 
 	init_ppp_packet_pool(&tunnel->ssl_to_pty_pool);
 	init_ppp_packet_pool(&tunnel->pty_to_ssl_pool);
@@ -467,12 +509,28 @@ int io_loop(struct tunnel *tunnel)
 	SEM_WAIT(&sem_stop_io);
 
 	log_info("Cancelling threads...\n");
-	pthread_cancel(tun_read_thr);
-	pthread_cancel(tun_write_thr);
-	pthread_cancel(ssl_read_thr);
-	pthread_cancel(ssl_write_thr);
-	pthread_cancel(if_config_thr);
 
+	/* Signal all threads to stop */
+	InterlockedExchange(&io_stopping, 1);
+
+	/* Close the SSL socket to unblock ssl_read_thread */
+	if (tunnel->ssl_socket != -1)
+		closesocket(tunnel->ssl_socket);
+
+	/* End wintun session to unblock tun_read_thread */
+	if (tunnel->tun_session)
+		wt_api.EndSession((WINTUN_SESSION_HANDLE)tunnel->tun_session);
+
+	/* Push NULL packets to unblock pool_pop */
+	pool_push(&tunnel->ssl_to_pty_pool, NULL);
+	pool_push(&tunnel->pty_to_ssl_pool, NULL);
+
+	/* Post semaphores to unblock waiting threads */
+	SEM_POST(&sem_ppp_ready);
+	SEM_POST(&sem_ppp_ready);
+	SEM_POST(&sem_if_config);
+
+	/* Give threads time to exit gracefully */
 	pthread_join(tun_read_thr, NULL);
 	pthread_join(tun_write_thr, NULL);
 	pthread_join(ssl_read_thr, NULL);
