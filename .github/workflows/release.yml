@@ -10,39 +10,30 @@ permissions:
   contents: write
 
 jobs:
-  build-windows:
-    name: Build Windows Release
-    runs-on: windows-latest
+  # ── openfortivpn CLI binaries (no GUI) ────────────────────────
 
+  cli-windows:
+    name: CLI - Windows
+    runs-on: windows-latest
     defaults:
       run:
         shell: msys2 {0}
-
     steps:
-      - name: Checkout Code
-        uses: actions/checkout@v6
-
-      - name: Setup MSYS2
-        uses: msys2/setup-msys2@v2
+      - uses: actions/checkout@v6
+      - uses: msys2/setup-msys2@v2
         with:
           msystem: MINGW64
           update: true
           install: >-
-            mingw-w64-x86_64-gcc
-            mingw-w64-x86_64-cmake
-            mingw-w64-x86_64-openssl
-            mingw-w64-x86_64-ninja
-
-      - name: Configure
-        run: |
-          mkdir build
-          cd build
-          cmake .. -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON
+            mingw-w64-x86_64-gcc mingw-w64-x86_64-cmake
+            mingw-w64-x86_64-openssl mingw-w64-x86_64-ninja
 
       - name: Build
         run: |
-          cd build
+          mkdir build && cd build
+          cmake .. -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON
           ninja
+          ctest --output-on-failure
 
       - name: Download wintun
         shell: pwsh
@@ -52,67 +43,300 @@ jobs:
           Expand-Archive -Path wintun.zip -DestinationPath wintun
           Copy-Item wintun/wintun/bin/amd64/wintun.dll .
 
-      - name: Collect Runtime DLLs
+      - name: Collect DLLs
         run: |
           cd build
-          cp /mingw64/bin/libssl-*.dll . 2>/dev/null || true
-          cp /mingw64/bin/libcrypto-*.dll . 2>/dev/null || true
-          cp /mingw64/bin/libwinpthread-*.dll . 2>/dev/null || true
-          cp /mingw64/bin/libgcc_s_seh-*.dll . 2>/dev/null || true
+          cp /mingw64/bin/libssl-*.dll .
+          cp /mingw64/bin/libcrypto-*.dll .
+          cp /mingw64/bin/libwinpthread-*.dll .
+          cp /mingw64/bin/libgcc_s_seh-*.dll .
 
-      - name: Run Tests
-        run: |
-          cd build
-          ctest --output-on-failure
-
-      - name: Package
+      - name: Package CLI
         shell: pwsh
         run: |
           cd build
           New-Item -ItemType Directory -Force -Path openfortivpn-windows-x64
-          Copy-Item openfortivpn.exe openfortivpn-windows-x64/
-          Copy-Item wintun.dll openfortivpn-windows-x64/ -ErrorAction SilentlyContinue
-          Copy-Item libssl-*.dll openfortivpn-windows-x64/ -ErrorAction SilentlyContinue
-          Copy-Item libcrypto-*.dll openfortivpn-windows-x64/ -ErrorAction SilentlyContinue
-          Copy-Item libwinpthread-*.dll openfortivpn-windows-x64/ -ErrorAction SilentlyContinue
-          Copy-Item libgcc_s_seh-*.dll openfortivpn-windows-x64/ -ErrorAction SilentlyContinue
+          Copy-Item openfortivpn.exe wintun.dll libssl-*.dll libcrypto-*.dll libwinpthread-*.dll libgcc_s_seh-*.dll openfortivpn-windows-x64/
           Copy-Item ../README.md openfortivpn-windows-x64/
           Compress-Archive -Path openfortivpn-windows-x64/* -DestinationPath openfortivpn-windows-x64.zip
 
-      - name: Upload Release
-        uses: softprops/action-gh-release@v2
+      - uses: actions/upload-artifact@v4
         with:
-          files: build/openfortivpn-windows-x64.zip
-          generate_release_notes: true
+          name: cli-windows
+          path: build/openfortivpn-windows-x64.zip
 
-  build-linux:
-    name: Build Linux Release
+  cli-linux:
+    name: CLI - Linux
     runs-on: ubuntu-latest
-
     steps:
-      - name: Checkout Code
-        uses: actions/checkout@v6
-
-      - name: Install Dependencies
-        run: |
+      - uses: actions/checkout@v6
+      - run: |
           sudo apt-get update
           sudo apt-get install -y pkg-config libssl-dev
-
-      - name: Build (autotools)
-        run: |
+      - run: |
           ./autogen.sh
           ./configure --prefix=/usr --sysconfdir=/etc
           make -j$(nproc)
+      - run: |
+          mkdir -p openfortivpn-linux-x64
+          cp openfortivpn README.md openfortivpn-linux-x64/
+          tar czf openfortivpn-linux-x64.tar.gz openfortivpn-linux-x64/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cli-linux
+          path: openfortivpn-linux-x64.tar.gz
+
+  # ── openfortitray GUI bundles (includes CLI) ──────────────────
+
+  tray-windows:
+    name: Tray GUI - Windows
+    runs-on: windows-latest
+    needs: [cli-windows]
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: cli-windows
+          path: cli-artifacts
+
+      - name: Install Python deps
+        run: |
+          pip install pyinstaller pillow
+          pip install -e openfortitray/
+
+      - name: Generate app icon
+        shell: pwsh
+        run: |
+          cd openfortitray
+          python -c "
+          from PySide6.QtWidgets import QApplication
+          from PySide6.QtGui import QPixmap, QPainter, QColor, QPen, QPainterPath, QIcon
+          from PySide6.QtCore import Qt, QRectF
+          import sys
+          app = QApplication(sys.argv)
+          size = 256
+          pixmap = QPixmap(size, size)
+          pixmap.fill(QColor(0,0,0,0))
+          p = QPainter(pixmap)
+          p.setRenderHint(QPainter.Antialiasing)
+          margin = size * 0.05
+          shield_h = size - 2*margin
+          shield_w = size - 2*margin
+          cx = size / 2
+          path = QPainterPath()
+          top = margin + shield_h * 0.05
+          bottom = margin + shield_h * 0.95
+          half_w = shield_w * 0.42
+          mid_y = margin + shield_h * 0.72
+          path.moveTo(cx, top)
+          path.lineTo(cx + half_w, top + shield_h * 0.08)
+          path.lineTo(cx + half_w, mid_y)
+          path.quadTo(cx + half_w, bottom, cx, bottom)
+          path.quadTo(cx - half_w, bottom, cx - half_w, mid_y)
+          path.lineTo(cx - half_w, top + shield_h * 0.08)
+          path.closeSubpath()
+          p.setBrush(QColor('#1a3a5c'))
+          p.setPen(QPen(QColor('#2d5a8e'), size * 0.02))
+          p.drawPath(path)
+          margin2 = size * 0.12
+          path2 = QPainterPath()
+          top2 = margin2 + shield_h * 0.05
+          bottom2 = margin2 + shield_h * 0.85
+          half_w2 = (shield_w - 2*(margin2 - margin)) * 0.35
+          path2.moveTo(cx, top2)
+          path2.lineTo(cx + half_w2, top2 + shield_h * 0.08)
+          path2.lineTo(cx + half_w2, margin2 + shield_h * 0.55)
+          path2.quadTo(cx + half_w2, bottom2, cx, bottom2)
+          path2.quadTo(cx - half_w2, bottom2, cx - half_w2, margin2 + shield_h * 0.55)
+          path2.lineTo(cx - half_w2, top2 + shield_h * 0.08)
+          path2.closeSubpath()
+          p.setBrush(QColor('#2d6a9e'))
+          p.setPen(Qt.NoPen)
+          p.drawPath(path2)
+          lock_cx = cx
+          lock_cy = size * 0.48
+          lock_w = size * 0.18
+          lock_h = size * 0.14
+          p.setBrush(QColor('#4ec9b0'))
+          p.setPen(Qt.NoPen)
+          p.drawRoundedRect(QRectF(lock_cx - lock_w/2, lock_cy - lock_h/4, lock_w, lock_h), size*0.02, size*0.02)
+          p.setPen(QPen(QColor('#4ec9b0'), size * 0.03))
+          p.setBrush(Qt.NoBrush)
+          p.drawArc(QRectF(lock_cx - lock_w*0.35, lock_cy - lock_h*0.65, lock_w*0.7, lock_h*0.7), 0, 180*16)
+          p.setBrush(QColor('#1a3a5c'))
+          p.setPen(Qt.NoPen)
+          p.drawEllipse(QRectF(lock_cx - size*0.015, lock_cy, size*0.03, size*0.03))
+          p.end()
+          pixmap.save('../app_icon.png')
+          from PIL import Image
+          img = Image.open('../app_icon.png')
+          img.save('../app_icon.ico', format='ICO', sizes=[(16,16),(32,32),(48,48),(64,64),(128,128),(256,256)])
+          print('Icon generated')
+          "
+
+      - name: Build Tray GUI
+        shell: pwsh
+        run: |
+          # Copy icon files for PyInstaller
+          Copy-Item app_icon.png openfortitray/packaging/app_icon.png
+          Copy-Item app_icon.ico openfortitray/packaging/app_icon.ico
+          Copy-Item app_icon.png openfortitray/app_icon.png
+          Copy-Item app_icon.ico openfortitray/app_icon.ico
+
+          # Extract CLI artifacts
+          Expand-Archive -Path cli-artifacts/openfortivpn-windows-x64.zip -DestinationPath cli-extracted
+
+          # Build with PyInstaller
+          cd openfortitray
+          python -m PyInstaller packaging/openfortitray-windows.spec --noconfirm --distpath ../dist --workpath ../build
+
+          # Copy CLI files next to the tray exe
+          Copy-Item ../cli-extracted/openfortivpn.exe ../dist/
+          Copy-Item ../cli-extracted/wintun.dll ../dist/
+          Copy-Item ../cli-extracted/libssl-*.dll ../dist/
+          Copy-Item ../cli-extracted/libcrypto-*.dll ../dist/
+          Copy-Item ../cli-extracted/libwinpthread-*.dll ../dist/
+          Copy-Item ../cli-extracted/libgcc_s_seh-*.dll ../dist/
+
+          # Package everything
+          New-Item -ItemType Directory -Force -Path ../dist/openfortitray-windows-x64
+          Get-ChildItem ../dist -File | ForEach-Object { Copy-Item $_.FullName ../dist/openfortitray-windows-x64/ }
+          Copy-Item README.md ../dist/openfortitray-windows-x64/
+          Compress-Archive -Path ../dist/openfortitray-windows-x64/* -DestinationPath ../openfortitray-windows-x64.zip
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tray-windows
+          path: openfortitray-windows-x64.zip
+
+  tray-linux:
+    name: Tray GUI - Linux
+    runs-on: ubuntu-latest
+    needs: [cli-linux]
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: cli-linux
+          path: cli-artifacts
+
+      - name: Install Python deps
+        run: |
+          pip install pyinstaller
+          pip install -e openfortitray/
+
+      - name: Extract CLI binary
+        run: |
+          tar xzf cli-artifacts/openfortivpn-linux-x64.tar.gz
+          chmod +x openfortivpn-linux-x64/openfortivpn
+
+      - name: Build Tray GUI
+        run: |
+          mkdir -p openfortitray/packaging/vendor/linux
+          cp openfortivpn-linux-x64/openfortivpn openfortitray/packaging/vendor/linux/
+          cd openfortitray
+          python -m PyInstaller packaging/openfortitray-linux.spec --noconfirm --distpath ../dist --workpath ../build
 
       - name: Package
         run: |
-          mkdir -p openfortivpn-linux-x64
-          cp openfortivpn openfortivpn-linux-x64/
-          cp README.md openfortivpn-linux-x64/
-          tar czf openfortivpn-linux-x64.tar.gz openfortivpn-linux-x64/
+          mkdir -p openfortitray-linux-x64
+          cp dist/openfortitray openfortitray-linux-x64/
+          cp openfortivpn-linux-x64/openfortivpn openfortitray-linux-x64/
+          cp openfortitray/README.md openfortitray-linux-x64/
+          tar czf openfortitray-linux-x64.tar.gz openfortitray-linux-x64/
 
-      - name: Upload Release
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tray-linux
+          path: openfortitray-linux-x64.tar.gz
+
+  # ── Publish GitHub Release ────────────────────────────────────
+
+  publish:
+    name: Publish Release
+    runs-on: ubuntu-latest
+    needs: [cli-windows, cli-linux, tray-windows, tray-linux]
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: cli-windows
+          path: artifacts
+      - uses: actions/download-artifact@v4
+        with:
+          name: cli-linux
+          path: artifacts
+      - uses: actions/download-artifact@v4
+        with:
+          name: tray-windows
+          path: artifacts
+      - uses: actions/download-artifact@v4
+        with:
+          name: tray-linux
+          path: artifacts
+
+      - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
-          files: openfortivpn-linux-x64.tar.gz
-          generate_release_notes: true
+          generate_release_notes: false
+          body: |
+            ## Downloads
+
+            ### Desktop GUI (recommended for most users)
+
+            | File | Platform | Contents |
+            |---|---|---|
+            | `openfortitray-windows-x64.zip` | Windows 10+ | OpenFortiTray GUI + openfortivpn CLI + wintun.dll + all DLLs |
+            | `openfortitray-linux-x64.tar.gz` | Linux | OpenFortiTray GUI + openfortivpn CLI |
+
+            The GUI bundles include everything you need -- just extract and run.
+            No separate downloads required.
+
+            ### Command-line only (for scripts / headless servers)
+
+            | File | Platform | Contents |
+            |---|---|---|
+            | `openfortivpn-windows-x64.zip` | Windows 10+ | openfortivpn.exe + wintun.dll + runtime DLLs |
+            | `openfortivpn-linux-x64.tar.gz` | Linux | openfortivpn binary |
+
+            ## Quick start (Windows GUI)
+
+            1. Download `openfortitray-windows-x64.zip`
+            2. Extract to any folder
+            3. Right-click `OpenFortiTray.exe` > Run as administrator
+            4. Click "Add" to create a VPN profile
+
+            ## Quick start (Windows CLI)
+
+            1. Download `openfortivpn-windows-x64.zip`
+            2. Extract and open Command Prompt as Administrator
+            3. Run: `openfortivpn vpn-gateway:8443 --username=foo`
+
+            ## What's new
+
+            - **OpenFortiTray GUI** -- cross-platform desktop app with profile
+              management, encrypted credential storage, multi-host fallback,
+              automatic TOTP generation, system tray, and one-click shortcuts
+            - **--otp-seed option** -- automatic TOTP generation from a Base32
+              seed (RFC 6238)
+            - **--otp-seed-file option** -- read seed from a file (most secure)
+            - **env:VAR prefix** -- read seed from environment variable
+            - **Windows support** -- wintun-based TUN adapter with in-process
+              PPP engine
+            - Various bug fixes for Windows routing, split routes, and shutdown
+          files: |
+            artifacts/openfortivpn-windows-x64.zip
+            artifacts/openfortivpn-linux-x64.tar.gz
+            artifacts/openfortitray-windows-x64.zip
+            artifacts/openfortitray-linux-x64.tar.gz

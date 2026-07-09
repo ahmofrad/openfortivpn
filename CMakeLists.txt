@@ -6,7 +6,7 @@ set(CMAKE_C_STANDARD 99)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 
 # Version from configure.ac
-set(PROJECT_VERSION "1.24.1")
+set(PROJECT_VERSION "1.26.0")
 
 # Find OpenSSL
 find_package(OpenSSL REQUIRED)
