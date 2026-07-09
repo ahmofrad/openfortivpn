@@ -56,7 +56,12 @@ jobs:
         run: |
           cd build
           New-Item -ItemType Directory -Force -Path openfortivpn-windows-x64
-          Copy-Item openfortivpn.exe wintun.dll libssl-*.dll libcrypto-*.dll libwinpthread-*.dll libgcc_s_seh-*.dll openfortivpn-windows-x64/
+          Copy-Item openfortivpn.exe openfortivpn-windows-x64/
+          Copy-Item wintun.dll openfortivpn-windows-x64/ -ErrorAction SilentlyContinue
+          Copy-Item libssl-*.dll openfortivpn-windows-x64/ -ErrorAction SilentlyContinue
+          Copy-Item libcrypto-*.dll openfortivpn-windows-x64/ -ErrorAction SilentlyContinue
+          Copy-Item libwinpthread-*.dll openfortivpn-windows-x64/ -ErrorAction SilentlyContinue
+          Copy-Item libgcc_s_seh-*.dll openfortivpn-windows-x64/ -ErrorAction SilentlyContinue
           Copy-Item ../README.md openfortivpn-windows-x64/
           Compress-Archive -Path openfortivpn-windows-x64/* -DestinationPath openfortivpn-windows-x64.zip
 
@@ -197,11 +202,7 @@ jobs:
 
           # Copy CLI files next to the tray exe
           Copy-Item ../cli-extracted/openfortivpn.exe ../dist/
-          Copy-Item ../cli-extracted/wintun.dll ../dist/
-          Copy-Item ../cli-extracted/libssl-*.dll ../dist/
-          Copy-Item ../cli-extracted/libcrypto-*.dll ../dist/
-          Copy-Item ../cli-extracted/libwinpthread-*.dll ../dist/
-          Copy-Item ../cli-extracted/libgcc_s_seh-*.dll ../dist/
+          Get-ChildItem ../cli-extracted -Filter "*.dll" | ForEach-Object { Copy-Item $_.FullName ../dist/ }
 
           # Package everything
           New-Item -ItemType Directory -Force -Path ../dist/openfortitray-windows-x64
@@ -250,7 +251,16 @@ jobs:
       - name: Package
         run: |
           mkdir -p openfortitray-linux-x64
-          cp dist/openfortitray openfortitray-linux-x64/
+          # PyInstaller onedir puts binary in dist/OpenFortiTray/
+          if [ -f dist/OpenFortiTray/openfortitray ]; then
+            cp -r dist/OpenFortiTray/* openfortitray-linux-x64/
+          elif [ -f dist/openfortitray ]; then
+            cp dist/openfortitray openfortitray-linux-x64/
+          else
+            echo "ERROR: openfortitray binary not found"
+            find dist -type f
+            exit 1
+          fi
           cp openfortivpn-linux-x64/openfortivpn openfortitray-linux-x64/
           cp openfortitray/README.md openfortitray-linux-x64/
           tar czf openfortitray-linux-x64.tar.gz openfortitray-linux-x64/
