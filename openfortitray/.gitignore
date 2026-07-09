@@ -1,0 +1,15 @@
+__pycache__/
+*.pyc
+*.egg-info/
+build/
+build2/
+dist/
+dist2/
+.eggs/
+*.spec.bak
+.ruff_cache/
+.pytest_cache/
+app_icon*.png
+app_icon*.ico
+packaging/app_icon.png
+packaging/app_icon.ico

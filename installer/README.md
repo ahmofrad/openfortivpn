@@ -29,7 +29,7 @@ Then run:
 makensis openfortivpn.nsi
 ```
 
-This produces `openfortivpn-1.24.1-setup.exe`.
+This produces `openfortivpn-1.25.0-setup.exe`.
 
 ## What the installer does
 

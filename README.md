@@ -365,3 +365,13 @@ Feel free to make pull requests!
 
 C coding style should follow the
 [Linux kernel coding style](https://www.kernel.org/doc/html/latest/process/coding-style.html).
+
+GUI (OpenFortiTray)
+-------------------
+
+A cross-platform desktop GUI for openfortivpn is available in the
+[`openfortitray/`](openfortitray/) directory. It provides profile management,
+encrypted credential storage (OS keyring), automatic TOTP generation, multi-host
+fallback, system tray integration, and single-click connect via desktop shortcuts.
+
+See [`openfortitray/README.md`](openfortitray/README.md) for details.
