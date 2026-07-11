@@ -116,22 +116,31 @@ class _PopenProcess(ElevatedProcess):
             return self._popen.returncode
 
         if sys.platform == "win32":
-            # On Windows, SIGTERM via popen.send_signal sends CTRL_BREAK_EVENT
-            # which may not work if the process doesn't handle it.
-            # Use taskkill /T /F to kill the entire process tree.
-            subprocess.run(
-                ["taskkill", "/PID", str(self._popen.pid), "/T", "/F"],
-                capture_output=True,
-                timeout=10,
-                creationflags=_WIN_NO_WINDOW,
-            )
+            # Use TerminateProcess directly via Popen.kill() -- this uses
+            # the handle from CreateProcess which always has
+            # PROCESS_TERMINATE access, regardless of UAC elevation.
+            # This is more reliable than taskkill which may get Access Denied.
+            try:
+                self._popen.kill()
+            except Exception as e:
+                logger.warning("Popen.kill() failed: %s, trying taskkill", e)
+                subprocess.run(
+                    ["taskkill", "/PID", str(self._popen.pid), "/T", "/F"],
+                    capture_output=True,
+                    timeout=10,
+                    creationflags=_WIN_NO_WINDOW,
+                )
         else:
             self._popen.send_signal(signal.SIGTERM)
 
         try:
             return self._popen.wait(timeout=timeout)
         except subprocess.TimeoutExpired:
-            self._popen.kill()
+            # Final resort
+            try:
+                self._popen.kill()
+            except Exception:
+                pass
             return self._popen.wait(timeout=5)
 
     def wait(self, timeout: float | None = None) -> int:
@@ -241,24 +250,46 @@ class _LogPollingProcess(ElevatedProcess):
 
     def terminate(self, timeout: float = 10.0) -> int:
         """Signal the process to stop."""
-        self._terminated = True  # Mark as terminated so is_running returns False
+        self._terminated = True
 
         if sys.platform == "win32":
-            # Kill the openfortivpn process tree by image name
-            # Use /T to kill child processes, /F to force
-            result1 = subprocess.run(
+            # Try multiple approaches to kill the elevated openfortivpn.exe:
+            # 1. taskkill /IM (kill by image name)
+            # 2. wmic process delete (WMI-based, works cross-privilege)
+            # 3. PowerShell Stop-Process (.NET based)
+            killed = False
+
+            # Approach 1: taskkill
+            result = subprocess.run(
                 ["taskkill", "/IM", "openfortivpn.exe", "/T", "/F"],
                 capture_output=True,
                 timeout=10,
                 creationflags=_WIN_NO_WINDOW,
             )
-            if result1.returncode != 0:
-                stderr = result1.stderr.decode("utf-8", errors="replace").strip()
+            if result.returncode == 0:
+                killed = True
+            else:
+                stderr = result.stderr.decode("utf-8", errors="replace").strip()
                 logger.warning("taskkill /IM failed: %s", stderr)
-                # If access denied, try via PowerShell Stop-Process (uses .NET Process.Kill)
-                # which sometimes works when taskkill doesn't
+
+            # Approach 2: wmic (works cross-privilege on some configs)
+            if not killed:
+                result = subprocess.run(
+                    ["wmic", "process", "where", "name='openfortivpn.exe'", "delete"],
+                    capture_output=True,
+                    timeout=10,
+                    creationflags=_WIN_NO_WINDOW,
+                )
+                if result.returncode == 0:
+                    killed = True
+                else:
+                    logger.warning("wmic delete failed: %s",
+                                   result.stderr.decode("utf-8", errors="replace").strip())
+
+            # Approach 3: PowerShell Stop-Process
+            if not killed:
                 try:
-                    subprocess.run(
+                    result = subprocess.run(
                         ["powershell", "-NoProfile", "-WindowStyle", "Hidden",
                          "-Command",
                          "Get-Process -Name openfortivpn -ErrorAction SilentlyContinue | "
@@ -267,10 +298,12 @@ class _LogPollingProcess(ElevatedProcess):
                         timeout=10,
                         creationflags=_WIN_NO_WINDOW,
                     )
-                except Exception:
-                    pass
+                    if result.returncode == 0:
+                        killed = True
+                except Exception as e:
+                    logger.warning("PowerShell Stop-Process failed: %s", e)
 
-            # Also kill the wrapper cmd.exe if still alive
+            # Kill the wrapper cmd.exe PID too
             if self._pid > 0:
                 subprocess.run(
                     ["taskkill", "/PID", str(self._pid), "/T", "/F"],

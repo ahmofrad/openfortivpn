@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 import os
+import subprocess
 import sys
 import threading
 from pathlib import Path
@@ -71,6 +72,15 @@ class ConnectionManager:
             logger.warning("connect() called while a process is already running")
             return False
 
+        # Kill any stale openfortivpn.exe from a previous failed disconnect
+        if sys.platform == "win32":
+            subprocess.run(
+                ["taskkill", "/IM", "openfortivpn.exe", "/T", "/F"],
+                capture_output=True,
+                timeout=5,
+                creationflags=0x08000000 if sys.platform == "win32" else 0,
+            )
+
         # Resolve secrets from keyring
         if password is None and self._secret_store and profile.password_ref:
             password = self._secret_store.get_password(profile.id)
@@ -131,8 +141,16 @@ class ConnectionManager:
         if self._proc:
             try:
                 self._proc.terminate(timeout=10)
-            except Exception:
-                logger.warning("Error during subprocess termination")
+            except Exception as e:
+                logger.warning("Error during subprocess termination: %s", e)
+
+            # Verify the process is actually dead
+            if self._proc.is_running:
+                logger.error("Process still alive after terminate() -- force killing")
+                try:
+                    self._proc.terminate(timeout=5)
+                except Exception:
+                    pass
 
         self._proc = None
         self._cleanup_files()
