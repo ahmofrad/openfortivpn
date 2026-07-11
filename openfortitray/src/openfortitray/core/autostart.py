@@ -153,10 +153,11 @@ def _write_windows_startup(path: Path) -> bool:
 
     try:
         subprocess.run(
-            ["powershell", "-NoProfile", "-Command", ps_script],
+            ["powershell", "-NoProfile", "-WindowStyle", "Hidden", "-Command", ps_script],
             check=True,
             capture_output=True,
             timeout=10,
+            creationflags=0x08000000 if sys.platform == "win32" else 0,
         )
         logger.info("Installed Windows startup shortcut: %s", path)
         return True

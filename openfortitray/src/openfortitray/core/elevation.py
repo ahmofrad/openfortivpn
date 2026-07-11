@@ -25,6 +25,9 @@ from typing import IO
 
 logger = logging.getLogger(__name__)
 
+# Windows: CREATE_NO_WINDOW flag to prevent CMD window flashing
+_WIN_NO_WINDOW = 0x08000000 if sys.platform == "win32" else 0
+
 
 def get_temp_dir() -> pathlib.Path:
     """Return a temp directory with a long (non-8.3) path.
@@ -109,8 +112,22 @@ class _PopenProcess(ElevatedProcess):
             return False
 
     def terminate(self, timeout: float = 10.0) -> int:
-        if self._popen.poll() is None:
+        if self._popen.poll() is not None:
+            return self._popen.returncode
+
+        if sys.platform == "win32":
+            # On Windows, SIGTERM via popen.send_signal sends CTRL_BREAK_EVENT
+            # which may not work if the process doesn't handle it.
+            # Use taskkill /T /F to kill the entire process tree.
+            subprocess.run(
+                ["taskkill", "/PID", str(self._popen.pid), "/T", "/F"],
+                capture_output=True,
+                timeout=10,
+                creationflags=_WIN_NO_WINDOW,
+            )
+        else:
             self._popen.send_signal(signal.SIGTERM)
+
         try:
             return self._popen.wait(timeout=timeout)
         except subprocess.TimeoutExpired:
@@ -133,6 +150,7 @@ def _launch_linux(binary: str, config_path: str, verbose: bool = True) -> Elevat
         stderr=subprocess.STDOUT,
         text=True,
         bufsize=1,
+        creationflags=_WIN_NO_WINDOW if sys.platform == "win32" else 0,
     )
     return _PopenProcess(popen)
 
@@ -165,6 +183,7 @@ class _LogPollingProcess(ElevatedProcess):
         self._exit_code: int | None = None
         self._opened = False
         self._log_lines_buffer: list[str] = []
+        self._terminated = False
 
     def write_input(self, text: str) -> bool:
         """Write to process stdin -- not supported for log-polling processes."""
@@ -176,6 +195,8 @@ class _LogPollingProcess(ElevatedProcess):
             for _ in range(50):  # up to 5 seconds
                 if self._log_path.exists():
                     break
+                if self._terminated:
+                    return
                 time.sleep(0.1)
             if not self._log_path.exists():
                 self._exit_code = -1
@@ -185,7 +206,7 @@ class _LogPollingProcess(ElevatedProcess):
 
     @property
     def is_running(self) -> bool:
-        if self._exit_code is not None:
+        if self._exit_code is not None or self._terminated:
             return False
         # The process is running if the exit-code file doesn't exist yet.
         return not self._exit_path.exists()
@@ -220,22 +241,42 @@ class _LogPollingProcess(ElevatedProcess):
 
     def terminate(self, timeout: float = 10.0) -> int:
         """Signal the process to stop."""
+        self._terminated = True  # Mark as terminated so is_running returns False
+
         if sys.platform == "win32":
-            # Kill by image name -- most reliable for elevated processes
-            # Use CREATE_NO_WINDOW to avoid flashing cmd windows
-            subprocess.run(
-                ["taskkill", "/IM", "openfortivpn.exe", "/F"],
+            # Kill the openfortivpn process tree by image name
+            # Use /T to kill child processes, /F to force
+            result1 = subprocess.run(
+                ["taskkill", "/IM", "openfortivpn.exe", "/T", "/F"],
                 capture_output=True,
                 timeout=10,
-                creationflags=0x08000000,  # CREATE_NO_WINDOW
+                creationflags=_WIN_NO_WINDOW,
             )
+            if result1.returncode != 0:
+                stderr = result1.stderr.decode("utf-8", errors="replace").strip()
+                logger.warning("taskkill /IM failed: %s", stderr)
+                # If access denied, try via PowerShell Stop-Process (uses .NET Process.Kill)
+                # which sometimes works when taskkill doesn't
+                try:
+                    subprocess.run(
+                        ["powershell", "-NoProfile", "-WindowStyle", "Hidden",
+                         "-Command",
+                         "Get-Process -Name openfortivpn -ErrorAction SilentlyContinue | "
+                         "Stop-Process -Force"],
+                        capture_output=True,
+                        timeout=10,
+                        creationflags=_WIN_NO_WINDOW,
+                    )
+                except Exception:
+                    pass
+
             # Also kill the wrapper cmd.exe if still alive
             if self._pid > 0:
                 subprocess.run(
                     ["taskkill", "/PID", str(self._pid), "/T", "/F"],
                     capture_output=True,
                     timeout=10,
-                    creationflags=0x08000000,  # CREATE_NO_WINDOW
+                    creationflags=_WIN_NO_WINDOW,
                 )
         else:
             try:
@@ -450,6 +491,19 @@ def _launch_macos(
     return _LogPollingProcess(pid, log_path, pid_path)
 
 
+def _is_elevated() -> bool:
+    """Check if the current process is already running with elevated privileges."""
+    if sys.platform == "win32":
+        try:
+            import ctypes
+
+            return ctypes.windll.shell32.IsUserAnAdmin()
+        except Exception:
+            return False
+    else:
+        return os.geteuid() == 0
+
+
 # ── Public dispatch ─────────────────────────────────────────────
 
 
@@ -458,11 +512,32 @@ def launch_elevated(
 ) -> ElevatedProcess:
     """Launch openfortivpn elevated, per-OS dispatch (AUTH.md §8).
 
+    If the current process is already elevated, launches directly
+    (gives us proper process control + stdin for interactive prompts).
+
     Raises FileNotFoundError if the binary doesn't exist.
     Raises OSError if the elevation itself fails (e.g. user cancels UAC).
     """
     if not os.path.isfile(binary):
         raise FileNotFoundError(f"Binary not found: {binary}")
+
+    # If we're already elevated, skip the elevation dance entirely
+    # and use a direct Popen (gives us stdin + real process control)
+    if _is_elevated():
+        logger.info("Process is already elevated -- launching directly")
+        cmd = [binary, "-c", config_path]
+        if verbose:
+            cmd.append("-v")
+        popen = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            stdin=subprocess.PIPE,
+            text=True,
+            bufsize=1,
+            creationflags=_WIN_NO_WINDOW,
+        )
+        return _PopenProcess(popen)
 
     if sys.platform == "linux":
         return _launch_linux(binary, config_path, verbose)
@@ -471,12 +546,16 @@ def launch_elevated(
     elif sys.platform == "darwin":
         return _launch_macos(binary, config_path, verbose)
     else:
-        # Fallback: try direct launch (will fail if not root)
         logger.warning("Unknown platform %s, launching without elevation", sys.platform)
         cmd = [binary, "-c", config_path]
         if verbose:
             cmd.append("-v")
         popen = subprocess.Popen(
-            cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+            creationflags=_WIN_NO_WINDOW,
         )
         return _PopenProcess(popen)
