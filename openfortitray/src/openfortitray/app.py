@@ -10,6 +10,7 @@ from PySide6.QtWidgets import QApplication, QMessageBox
 
 from openfortitray.core.autostart import disable_autostart, enable_autostart
 from openfortitray.core.connection_manager import ConnectionManager
+from openfortitray.core.connection_session import ConnectionSession
 from openfortitray.core.profile import VpnProfile
 from openfortitray.core.profile_store import ProfileStore
 from openfortitray.core.secret_store import NoKeyringBackendError, SecretStore
@@ -65,13 +66,18 @@ class App:
             secret_store=self.secrets,
         )
 
+        # Try to start the privileged helper daemon (one UAC prompt for
+        # the entire session; falls back to per-connect elevation)
+        self.conn.try_start_helper()
+
+        # Connection session: owns multi-host state, credentials, fallback
+        self.session = ConnectionSession(self.conn, self.secrets)
+        self.session.on_password_needed = self._prompt_password
+
         self.window = MainWindow()
 
         # Tray (must be created before _refresh_profiles references it)
         self.tray = TrayController()
-
-        # Session-level credential cache for interactive prompts
-        self._session_password: str | None = None
 
         self._refresh_profiles()
 
@@ -133,10 +139,22 @@ class App:
         if profile:
             self._connect_profile(profile)
 
-    def _connect_profile(self, profile: VpnProfile) -> None:
-        if self.conn.is_running:
-            self.conn.disconnect()
+    def _prompt_password(self, profile: VpnProfile) -> str | None:
+        """Interactive password prompt (called by session.resolve_credentials)."""
+        from openfortitray.ui.credential_dialogs import PasswordPromptDialog
 
+        dlg = PasswordPromptDialog(
+            username=profile.username,
+            host=profile.name,
+            parent=self.window,
+        )
+        if dlg.exec():
+            if dlg.username:
+                profile.username = dlg.username
+            return dlg.password
+        return None
+
+    def _connect_profile(self, profile: VpnProfile) -> None:
         # Auto-fetch cert hash if not already trusted (no user prompt)
         from openfortitray.ui.profile_editor import ProfileEditor
 
@@ -144,61 +162,12 @@ class App:
             ProfileEditor.auto_fetch_cert(profile)
             self.store.save()
 
-        password = None
-        otp_seed = None
-        if self.secrets:
-            if profile.auth_mode in (
-                "password", "password_otp_manual", "password_otp_seed"
-            ):
-                password = self.secrets.get_password(profile.id)
-            if profile.auth_mode == "password_otp_seed":
-                otp_seed = self.secrets.get_otp_seed(profile.id)
-
-        # If no password saved, prompt interactively before connecting
-        if not password:
-            if self._session_password:
-                password = self._session_password
-            else:
-                from openfortitray.ui.credential_dialogs import PasswordPromptDialog
-
-                dlg = PasswordPromptDialog(
-                    username=profile.username,
-                    host=profile.name,
-                    parent=self.window,
-                )
-                if dlg.exec():
-                    password = dlg.password
-                    if dlg.username:
-                        profile.username = dlg.username
-                    self._session_password = password
-                else:
-                    return  # user cancelled
-
-        # Cache for relaunch (OTP prompt triggers a relaunch on Windows)
-        self._session_password = password
-        self._session_otp_seed = otp_seed
-
-        # Get host list for fallback
-        self._host_list = profile.get_host_list()
-        self._host_index = 0
-        self._connect_creds = {"password": password, "otp_seed": otp_seed}
-        self._current_host_override = (
-            self._host_list[0] if self._host_list else None
-        )
-
         self.tray.set_active_profile(profile)
         self.notifications.set_active_profile(profile)
-
-        # Start with first host
-        self.conn.connect(
-            profile,
-            password=password,
-            otp_seed=otp_seed,
-            host_override=self._current_host_override,
-        )
+        self.session.start(profile)
 
     def _on_disconnect(self) -> None:
-        self.conn.disconnect()
+        self.session.stop()
         self.tray.set_active_profile(None)
 
     def _on_state_change_threadsafe(self, state: ConnectionState) -> None:
@@ -213,25 +182,10 @@ class App:
 
         # Multi-host fallback: on connection error, try next host
         if state == ConnectionState.ERROR:
-            self._try_next_host()
-
-    def _try_next_host(self) -> None:
-        """If there are more hosts to try, connect to the next one."""
-        self._host_index += 1
-        if hasattr(self, "_host_list") and self._host_index < len(self._host_list):
-            host_port = self._host_list[self._host_index]
-            self._current_host_override = host_port
-            profile = self.tray._active_profile
-            if profile:
-                logger.info("Trying next host: %s:%d", host_port[0], host_port[1])
+            if self.session.on_state_change(state):
                 self.window.append_log_line(
-                    f"--- Trying next host: {host_port[0]}:{host_port[1]} ---"
-                )
-                self.conn.connect(
-                    profile,
-                    password=self._connect_creds.get("password"),
-                    otp_seed=self._connect_creds.get("otp_seed"),
-                    host_override=host_port,
+                    f"--- Trying next host: "
+                    f"{self.session.current_host[0]}:{self.session.current_host[1]} ---"
                 )
 
     def _on_notification_ui(self, state_value: int) -> None:
@@ -270,49 +224,25 @@ class App:
         from openfortitray.ui.credential_dialogs import OtpPromptDialog
 
         dlg = OtpPromptDialog(parent=self.window)
-        if not dlg.exec():
-            self.conn.disconnect()
+        if not dlg.exec() or not dlg.otp:
+            self.session.stop()
+            self.tray.set_active_profile(None)
             return
 
         otp_code = dlg.otp
-        if not otp_code:
-            self.conn.disconnect()
-            return
 
-        # Try writing to stdin first (Linux)
+        # Try writing to stdin first (Linux / elevated-direct)
         if self.conn._proc and self.conn._proc.write_input(otp_code):
             return
 
-        # Windows: can't write stdin to elevated process.
-        # Kill, add otp to config, and relaunch.
-        profile = self.tray._active_profile
-        if not profile:
-            return
-
-        # Reuse credentials from the session
-        password = self._session_password
-        otp_seed = getattr(self, "_session_otp_seed", None)
-        if self.secrets:
-            if not password:
-                password = self.secrets.get_password(profile.id)
-            if not otp_seed:
-                otp_seed = self.secrets.get_otp_seed(profile.id)
-
-        self.conn.disconnect()
-        self.conn.connect(
-            profile,
-            password=password,
-            otp_seed=otp_seed,
-            otp_code=otp_code,
-            host_override=getattr(self, "_current_host_override", None),
-        )
+        # Windows elevated: relaunch with otp in config
+        self.session.relaunch_with_otp(otp_code)
 
     def _on_wake(self) -> None:
         """Called when system wakes from sleep -- reconnect if needed."""
-        if not self.state_machine.is_connected and self.tray._active_profile:
+        if not self.state_machine.is_connected and self.session.profile:
             logger.info("Reconnecting after wake...")
-            profile = self.tray._active_profile
-            self._connect_profile(profile)
+            self._connect_profile(self.session.profile)
 
     # ── Profile CRUD ────────────────────────────────────────────
 
@@ -496,6 +426,7 @@ class App:
     def _on_quit(self) -> None:
         if self.conn.is_running:
             self.conn.disconnect()
+        self.conn.shutdown_helper()
         self.store.save()
         self.window.force_quit()
         QApplication.quit()

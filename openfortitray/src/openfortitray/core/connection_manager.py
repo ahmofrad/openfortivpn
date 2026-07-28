@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Callable
 
 from openfortitray.core.elevation import ElevatedProcess, launch_elevated, get_temp_dir
+from openfortitray.core.helper import HelperClient
 from openfortitray.core.profile import VpnProfile
 from openfortitray.core.secret_store import SecretStore
 from openfortitray.core.state_machine import StateMachine
@@ -28,6 +29,7 @@ class ConnectionManager:
         binary_path: str,
         state_machine: StateMachine,
         secret_store: SecretStore | None = None,
+        use_helper: bool = True,
     ) -> None:
         self.binary_path = binary_path
         self.state = state_machine
@@ -39,8 +41,43 @@ class ConnectionManager:
         self._on_output: Callable[[str], None] | None = None
         self._reader_thread: threading.Thread | None = None
 
+        # Helper daemon (Windows only, preferred path)
+        self._helper: HelperClient | None = None
+        self._use_helper = use_helper and sys.platform == "win32"
+        self._helper_vpn_running = False
+
+    def try_start_helper(self) -> bool:
+        """Try to start the privileged helper daemon (one UAC prompt).
+
+        Returns True if the helper is running and usable.
+        Call this once at app startup on Windows.
+        """
+        if not self._use_helper:
+            return False
+        if self._helper is not None and self._helper.is_connected:
+            return True
+
+        self._helper = HelperClient()
+        if self._helper.start_helper():
+            self._helper.on_line = self._on_helper_line
+            self._helper.on_exit = self._on_helper_exit
+            logger.info("Privileged helper daemon connected")
+            return True
+
+        logger.warning("Helper daemon unavailable, falling back to per-connect elevation")
+        self._helper = None
+        return False
+
+    def shutdown_helper(self) -> None:
+        """Shut down the helper daemon (called on app quit)."""
+        if self._helper is not None:
+            self._helper.shutdown()
+            self._helper = None
+
     @property
     def is_running(self) -> bool:
+        if self._helper is not None:
+            return self._helper_vpn_running
         return self._proc is not None and self._proc.is_running
 
     @property
@@ -49,6 +86,23 @@ class ConnectionManager:
 
     def set_output_callback(self, cb: Callable[[str], None]) -> None:
         self._on_output = cb
+
+    # ── Helper callbacks ────────────────────────────────────────
+
+    def _on_helper_line(self, line: str) -> None:
+        """Called when the helper forwards a log line from openfortivpn."""
+        self._log_lines.append(line)
+        logger.debug("vpn: %s", line)
+        if self._on_output:
+            self._on_output(line)
+        self.state.on_log_line(line)
+
+    def _on_helper_exit(self, returncode: int) -> None:
+        """Called when the helper reports the vpn process exited."""
+        self._helper_vpn_running = False
+        logger.info("openfortivpn exited with code %d", returncode)
+        self.state.on_process_exit(returncode)
+        self._cleanup_files()
 
     def connect(
         self,
@@ -73,7 +127,8 @@ class ConnectionManager:
             return False
 
         # Kill any stale openfortivpn.exe from a previous failed disconnect
-        if sys.platform == "win32":
+        # (only needed without helper; helper owns its children)
+        if sys.platform == "win32" and self._helper is None:
             subprocess.run(
                 ["taskkill", "/IM", "openfortivpn.exe", "/T", "/F"],
                 capture_output=True,
@@ -109,6 +164,17 @@ class ConnectionManager:
         self._log_lines.clear()
         self.state.on_connect_requested()
 
+        # Use the helper daemon if available (no per-connect UAC, clean kill)
+        if self._helper is not None and self._helper.is_connected:
+            ok = self._helper.start_vpn(
+                self.binary_path, str(config_path), verbose=True
+            )
+            if ok:
+                self._helper_vpn_running = True
+                return True
+            logger.warning("Helper start_vpn failed, falling back to direct launch")
+            self._helper_vpn_running = False
+
         try:
             self._proc = launch_elevated(
                 self.binary_path, str(config_path), verbose=True
@@ -137,6 +203,13 @@ class ConnectionManager:
             return
 
         self.state.on_disconnect_requested()
+
+        # Helper path: send STOP command (helper has full kill rights)
+        if self._helper is not None and self._helper.is_connected:
+            self._helper.stop_vpn()
+            self._helper_vpn_running = False
+            self._cleanup_files()
+            return
 
         if self._proc:
             try:
