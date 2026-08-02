@@ -40,6 +40,8 @@ def _helper_main(pipe_name: str = PIPE_NAME) -> int:
     import win32file
     import win32pipe
     import win32api
+    import pywintypes
+    import winerror
 
     proc: subprocess.Popen | None = None
     proc_lock = threading.Lock()
@@ -70,12 +72,20 @@ def _helper_main(pipe_name: str = PIPE_NAME) -> int:
 
     while True:
         # Create the pipe (fresh instance per client)
-        pipe = win32pipe.CreateNamedPipe(
-            pipe_name,
-            win32pipe.PIPE_ACCESS_DUPLEX,
-            win32pipe.PIPE_TYPE_MESSAGE | win32pipe.PIPE_READMODE_MESSAGE | win32pipe.PIPE_WAIT,
-            1, 65536, 65536, 0, None,
-        )
+        try:
+            pipe = win32pipe.CreateNamedPipe(
+                pipe_name,
+                win32pipe.PIPE_ACCESS_DUPLEX,
+                win32pipe.PIPE_TYPE_MESSAGE | win32pipe.PIPE_READMODE_MESSAGE | win32pipe.PIPE_WAIT,
+                1, 65536, 65536, 0, None,
+            )
+        except pywintypes.error as e:
+            if e.winerror == winerror.ERROR_PIPE_BUSY:
+                # Another helper instance already owns the pipe.
+                # Exit silently -- the GUI will connect to the existing one.
+                logger.debug("Helper: pipe already owned by another instance, exiting")
+                return 0
+            raise
         logger.debug("Helper: waiting for GUI connection...")
         try:
             win32pipe.ConnectNamedPipe(pipe, None)
@@ -171,19 +181,38 @@ class HelperClient:
         self._connected = False
 
     def start_helper(self) -> bool:
-        """Launch the helper elevated via ShellExecuteEx(runas).
+        """Connect to the helper daemon, launching it elevated if needed.
 
-        One UAC prompt per app session.
+        First tries to connect to an already-running helper (no UAC
+        prompt). Only launches a new elevated helper if none exists.
         """
         if self._connected:
             return True
 
+        # 1. Try to reuse an already-running helper (no UAC prompt).
+        if self._connect_to_pipe(attempts=1):
+            logger.info("Helper: connected to existing helper daemon")
+            return True
+
+        # 2. No helper running -- launch one elevated.
+        if not self._launch_elevated():
+            return False
+
+        # 3. Connect to the newly launched helper.
+        if self._connect_to_pipe(attempts=30):  # ~6s
+            logger.info("Helper: connected")
+            return True
+
+        logger.error("Helper: could not connect to pipe")
+        return False
+
+    def _launch_elevated(self) -> bool:
+        """Launch the helper elevated via ShellExecuteEx(runas)."""
         # Write a small helper launcher script to temp
         tmp = Path(os.environ.get("TEMP", ".")) / "openfortitray"
         tmp.mkdir(parents=True, exist_ok=True)
         launcher = tmp / "helper_launcher.bat"
 
-        # Launch python -m openfortitray.helper --run-helper
         if getattr(sys, "frozen", False):
             helper_cmd = f'"{sys.executable}" --run-helper'
         else:
@@ -218,13 +247,19 @@ class HelperClient:
             err = ctypes.get_last_error()
             logger.warning("Helper: ShellExecuteEx failed (error %d)", err)
             return False
+        return True
 
-        # Wait for the pipe to become available and connect
+    def _connect_to_pipe(self, attempts: int) -> bool:
+        """Try to connect to the helper's named pipe and handshake.
+
+        Returns True if connected and READY received.
+        """
         import win32file
         import winerror
         import pywintypes
 
-        for _ in range(30):  # ~6 seconds; helper starts fast if UAC accepted
+        self._pipe = None
+        for _ in range(attempts):
             try:
                 self._pipe = win32file.CreateFile(
                     self.pipe_name,
@@ -233,13 +268,15 @@ class HelperClient:
                 )
                 break
             except pywintypes.error as e:
-                if e.winerror == winerror.ERROR_PIPE_BUSY:
+                if e.winerror in (
+                    winerror.ERROR_PIPE_BUSY,
+                    winerror.ERROR_FILE_NOT_FOUND,
+                ):
                     time.sleep(0.2)
                     continue
                 time.sleep(0.2)
 
         if self._pipe is None:
-            logger.error("Helper: could not connect to pipe")
             return False
 
         # Wait for READY
@@ -252,7 +289,6 @@ class HelperClient:
         self._connected = True
         self._reader = threading.Thread(target=self._read_loop, daemon=True)
         self._reader.start()
-        logger.info("Helper: connected")
         return True
 
     @property
@@ -345,7 +381,12 @@ def main() -> int:
         level=logging.DEBUG,
         format="%(asctime)s %(levelname)s helper: %(message)s",
     )
-    return _helper_main()
+    try:
+        return _helper_main()
+    except Exception:
+        # Never crash with a traceback dialog -- exit silently.
+        logger.exception("Helper daemon fatal error")
+        return 1
 
 
 if __name__ == "__main__":
