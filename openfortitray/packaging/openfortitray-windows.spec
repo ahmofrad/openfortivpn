@@ -1,5 +1,7 @@
 # -*- mode: python ; coding: utf-8 -*-
-"""PyInstaller spec for Windows -- onefile mode (single .exe, no _internal).
+"""PyInstaller spec for Windows -- onedir mode (fast startup, no extraction).
+
+Produces dist/OpenFortiTray/ containing OpenFortiTray.exe and _internal/.
 
 Build: pyinstaller packaging/openfortitray-windows.spec --noconfirm
 """
@@ -12,7 +14,7 @@ block_cipher = None
 project_root = Path.cwd()
 vendor_dir = project_root / 'packaging' / 'vendor' / 'windows'
 
-# Collect all vendored DLLs/exes + icon
+# Icon data files
 datas = [('app_icon.png', '.'), ('app_icon.ico', '.')]
 binaries = []
 
@@ -95,16 +97,25 @@ pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
 exe = EXE(
     pyz,
     a.scripts,
-    a.binaries,
-    a.datas,
     [],
+    exclude_binaries=True,
     name='OpenFortiTray',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
     upx=False,
-    runtime_tmpdir=None,
     console=False,
     disable_windowed_traceback=False,
     icon=str(project_root / 'app_icon.ico'),
+)
+
+coll = COLLECT(
+    exe,
+    a.binaries,
+    a.zipfiles,
+    a.datas,
+    strip=False,
+    upx=False,
+    upx_exclude=[],
+    name='OpenFortiTray',
 )
