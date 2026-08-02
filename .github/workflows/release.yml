@@ -200,14 +200,13 @@ jobs:
           cd openfortitray
           python -m PyInstaller packaging/openfortitray-windows.spec --noconfirm --distpath ../dist --workpath ../build
 
-          # Copy CLI files next to the tray exe
-          Copy-Item ../cli-extracted/openfortivpn.exe ../dist/
-          Get-ChildItem ../cli-extracted -Filter "*.dll" | ForEach-Object { Copy-Item $_.FullName ../dist/ }
+          # Copy CLI files next to the tray exe (inside the onedir output)
+          Copy-Item ../cli-extracted/openfortivpn.exe ../dist/OpenFortiTray/
+          Get-ChildItem ../cli-extracted -Filter "*.dll" | ForEach-Object { Copy-Item $_.FullName ../dist/OpenFortiTray/ }
 
-          # Package everything
-          New-Item -ItemType Directory -Force -Path ../dist/openfortitray-windows-x64
-          Get-ChildItem ../dist -File | ForEach-Object { Copy-Item $_.FullName ../dist/openfortitray-windows-x64/ }
-          Copy-Item README.md ../dist/openfortitray-windows-x64/
+          # Package the whole onedir folder (contains exe + _internal/)
+          Copy-Item README.md ../dist/OpenFortiTray/
+          Rename-Item ../dist/OpenFortiTray openfortitray-windows-x64
           Compress-Archive -Path ../dist/openfortitray-windows-x64/* -DestinationPath ../openfortitray-windows-x64.zip
 
       - uses: actions/upload-artifact@v4
