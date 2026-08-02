@@ -45,28 +45,36 @@ class ConnectionManager:
         self._helper: HelperClient | None = None
         self._use_helper = use_helper and sys.platform == "win32"
         self._helper_vpn_running = False
+        self._helper_lock = threading.Lock()
+        self._helper_start_failed = False
 
     def try_start_helper(self) -> bool:
         """Try to start the privileged helper daemon (one UAC prompt).
 
         Returns True if the helper is running and usable.
-        Call this once at app startup on Windows.
+        Thread-safe and idempotent.
         """
         if not self._use_helper:
             return False
-        if self._helper is not None and self._helper.is_connected:
-            return True
+        with self._helper_lock:
+            if self._helper is not None and self._helper.is_connected:
+                return True
+            if self._helper_start_failed:
+                return False
 
-        self._helper = HelperClient()
-        if self._helper.start_helper():
-            self._helper.on_line = self._on_helper_line
-            self._helper.on_exit = self._on_helper_exit
-            logger.info("Privileged helper daemon connected")
-            return True
+            self._helper = HelperClient()
+            if self._helper.start_helper():
+                self._helper.on_line = self._on_helper_line
+                self._helper.on_exit = self._on_helper_exit
+                logger.info("Privileged helper daemon connected")
+                return True
 
-        logger.warning("Helper daemon unavailable, falling back to per-connect elevation")
-        self._helper = None
-        return False
+            logger.warning(
+                "Helper daemon unavailable, falling back to per-connect elevation"
+            )
+            self._helper = None
+            self._helper_start_failed = True
+            return False
 
     def shutdown_helper(self) -> None:
         """Shut down the helper daemon (called on app quit)."""

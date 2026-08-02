@@ -66,9 +66,8 @@ class App:
             secret_store=self.secrets,
         )
 
-        # Try to start the privileged helper daemon (one UAC prompt for
-        # the entire session; falls back to per-connect elevation)
-        self.conn.try_start_helper()
+        # Helper daemon starts lazily in the background AFTER the window
+        # shows (see main()). Never block startup on a UAC prompt.
 
         # Connection session: owns multi-host state, credentials, fallback
         self.session = ConnectionSession(self.conn, self.secrets)
@@ -566,6 +565,20 @@ def main() -> int:
     elif is_first_run or not gui.store.settings.start_minimized or not tray_ok:
         gui.window.show()
         gui.window.force_foreground()
+
+    # Start the privileged helper in a background thread AFTER the UI is up.
+    # It fires one UAC prompt (when the user clicks OK) and connects the pipe.
+    # If the user connects before it's ready, we fall back to per-connect
+    # elevation. Never block startup on this.
+    import threading
+
+    def _start_helper_bg():
+        try:
+            gui.conn.try_start_helper()
+        except Exception as e:
+            logger.warning("Helper daemon start failed: %s", e)
+
+    threading.Thread(target=_start_helper_bg, daemon=True).start()
 
     return app.exec()
 

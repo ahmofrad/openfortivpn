@@ -1,6 +1,16 @@
-"""Generate the OpenFortiTray app icon."""
-from PySide6.QtGui import QPixmap, QPainter, QColor, QPen, QPainterPath, QIcon
+"""Generate the OpenFortiTray app icon.
+
+Run from the openfortitray/ project root:
+    python packaging/generate_icon.py
+
+Writes app_icon.png / app_icon.ico to the project root and to packaging/.
+"""
+from pathlib import Path
+import sys
+
+from PySide6.QtGui import QPixmap, QPainter, QColor, QPen, QPainterPath
 from PySide6.QtCore import Qt, QRectF
+from PySide6.QtWidgets import QApplication
 
 
 def draw_icon(size: int) -> QPixmap:
@@ -21,7 +31,6 @@ def draw_icon(size: int) -> QPixmap:
     bottom = margin + shield_h * 0.95
     half_w = shield_w * 0.42
     mid_y = margin + shield_h * 0.72
-
     path.moveTo(cx, top)
     path.lineTo(cx + half_w, top + shield_h * 0.08)
     path.lineTo(cx + half_w, mid_y)
@@ -40,7 +49,6 @@ def draw_icon(size: int) -> QPixmap:
     top2 = margin2 + shield_h * 0.05
     bottom2 = margin2 + shield_h * 0.85
     half_w2 = (shield_w - 2 * (margin2 - margin)) * 0.35
-
     path2.moveTo(cx, top2)
     path2.lineTo(cx + half_w2, top2 + shield_h * 0.08)
     path2.lineTo(cx + half_w2, margin2 + shield_h * 0.55)
@@ -58,7 +66,6 @@ def draw_icon(size: int) -> QPixmap:
     lock_cy = size * 0.48
     lock_w = size * 0.18
     lock_h = size * 0.14
-
     p.setBrush(QColor("#4ec9b0"))
     p.setPen(Qt.NoPen)
     p.drawRoundedRect(
@@ -84,18 +91,33 @@ def draw_icon(size: int) -> QPixmap:
     return pixmap
 
 
+def main() -> None:
+    root = Path(__file__).resolve().parent.parent
+    _app = QApplication(sys.argv)  # noqa: F841  (needed for QPixmap)
+
+    png = draw_icon(256)
+    (root / "app_icon.png").write_bytes(b"")
+    png.save(str(root / "app_icon.png"))
+    print(f"Saved {root / 'app_icon.png'}")
+
+    try:
+        from PIL import Image
+
+        img = Image.open(str(root / "app_icon.png"))
+        sizes = [(16, 16), (32, 32), (48, 48), (64, 64), (128, 128), (256, 256)]
+        img.save(str(root / "app_icon.ico"), format="ICO", sizes=sizes)
+        print(f"Saved {root / 'app_icon.ico'}")
+    except ImportError:
+        print("Pillow not installed; skipping .ico (pip install pillow)")
+
+    # Copy to packaging/ so the PyInstaller spec can find them
+    pkg = root / "packaging"
+    for name in ("app_icon.png", "app_icon.ico"):
+        src = root / name
+        if src.exists():
+            (pkg / name).write_bytes(src.read_bytes())
+            print(f"Copied to {pkg / name}")
+
+
 if __name__ == "__main__":
-    import sys
-
-    app_pixmap = draw_icon(256)
-    app_pixmap.save("app_icon.png")
-    print("Saved app_icon.png (256x256)")
-
-    for sz in (16, 32, 64, 128, 256):
-        pm = draw_icon(sz)
-        pm.save(f"app_icon_{sz}.png")
-        print(f"Saved app_icon_{sz}.png")
-
-    icon = QIcon(app_pixmap)
-    icon.save("app_icon.ico")
-    print("Saved app_icon.ico")
+    main()

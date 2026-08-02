@@ -9,7 +9,3 @@ dist2/
 *.spec.bak
 .ruff_cache/
 .pytest_cache/
-app_icon*.png
-app_icon*.ico
-packaging/app_icon.png
-packaging/app_icon.ico

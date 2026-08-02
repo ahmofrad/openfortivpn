@@ -224,7 +224,7 @@ class HelperClient:
         import winerror
         import pywintypes
 
-        for _ in range(100):  # 20 seconds
+        for _ in range(30):  # ~6 seconds; helper starts fast if UAC accepted
             try:
                 self._pipe = win32file.CreateFile(
                     self.pipe_name,
