@@ -31,12 +31,27 @@ PIPE_NAME = r"\\.\pipe\OpenFortiTrayHelper"
 # Windows CREATE_NO_WINDOW
 _WIN_NO_WINDOW = 0x08000000 if sys.platform == "win32" else 0
 
+# Module-level handle on the currently running openfortivpn child process
+# so the shutdown watchdog can kill it before hard-exiting.
+_vpn_proc: "subprocess.Popen | None" = None
+
+
+def _kill_vpn_now() -> None:
+    """Force-kill the tracked VPN child process (best effort)."""
+    global _vpn_proc
+    try:
+        if _vpn_proc is not None and _vpn_proc.poll() is None:
+            _vpn_proc.kill()
+    except Exception:
+        pass
+
 
 # ── Helper side (runs elevated) ─────────────────────────────────
 
 
 def _helper_main(pipe_name: str = PIPE_NAME) -> int:
     """Run the helper daemon. This process must be elevated."""
+    global _vpn_proc
     import win32file
     import win32pipe
     import win32api
@@ -48,6 +63,7 @@ def _helper_main(pipe_name: str = PIPE_NAME) -> int:
 
     def kill_proc() -> None:
         nonlocal proc
+        global _vpn_proc
         with proc_lock:
             if proc is not None and proc.poll() is None:
                 logger.debug("Helper: killing openfortivpn")
@@ -57,6 +73,7 @@ def _helper_main(pipe_name: str = PIPE_NAME) -> int:
                 except subprocess.TimeoutExpired:
                     pass
             proc = None
+            _vpn_proc = None
 
     def reader_thread(p: subprocess.Popen, pipe) -> None:
         """Read openfortivpn output and forward to pipe."""
@@ -130,6 +147,7 @@ def _helper_main(pipe_name: str = PIPE_NAME) -> int:
                             bufsize=1,
                             creationflags=_WIN_NO_WINDOW,
                         )
+                        _vpn_proc = proc
                         _pipe_write_line(pipe, f"PID {proc.pid}")
                         threading.Thread(
                             target=reader_thread, args=(proc, pipe), daemon=True
@@ -381,12 +399,50 @@ def main() -> int:
         level=logging.DEBUG,
         format="%(asctime)s %(levelname)s helper: %(message)s",
     )
+    _install_shutdown_watcher()
     try:
         return _helper_main()
     except Exception:
         # Never crash with a traceback dialog -- exit silently.
         logger.exception("Helper daemon fatal error")
         return 1
+
+
+def _install_shutdown_watcher() -> None:
+    """Hard-exit on Windows session end to avoid shutdown crash dialogs.
+
+    A message-only window receives WM_QUERYENDSESSION / WM_ENDSESSION
+    during logoff/shutdown; we os._exit() immediately so Python
+    finalizers and the blocking pipe loop can't fault during teardown.
+    """
+    if sys.platform != "win32":
+        return
+
+    def _watch() -> None:
+        try:
+            import win32con
+            import win32gui
+
+            def wndproc(hwnd, msg, wparam, lparam):
+                if msg in (win32con.WM_QUERYENDSESSION, win32con.WM_ENDSESSION):
+                    _kill_vpn_now()
+                    os._exit(0)
+                return win32gui.DefWindowProc(hwnd, msg, wparam, lparam)
+
+            wc = win32gui.WNDCLASS()
+            wc.lpfnWndProc = wndproc
+            wc.lpszClassName = "OFTHelperWatchdog"
+            wc.hInstance = win32gui.GetModuleHandle(None)
+            win32gui.RegisterClass(wc)
+            win32gui.CreateWindow(
+                wc.lpszClassName, "watcher", 0, 0, 0, 0, 0,
+                win32con.HWND_MESSAGE, 0, wc.hInstance, None,
+            )
+            win32gui.PumpMessages()
+        except Exception:
+            pass
+
+    threading.Thread(target=_watch, daemon=True).start()
 
 
 if __name__ == "__main__":

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import sys
 
 from PySide6.QtWidgets import QApplication, QMessageBox
@@ -473,6 +474,20 @@ def main() -> int:
             break
 
     gui = App()
+
+    # Handle OS shutdown/logoff gracefully. Frozen PyInstaller apps can
+    # crash with "referenced memory" dialogs if Python finalizers and
+    # background threads (pipe reader, timers) are still running while
+    # Windows tears the session down. On the shutdown message, stop the
+    # VPN/helper quickly and hard-exit before any finalizers run.
+    def _on_commit_data(_session_manager) -> None:
+        try:
+            gui.conn.shutdown_helper()
+        except Exception:
+            pass
+        os._exit(0)
+
+    app.commitDataRequest.connect(_on_commit_data)
 
     # Create a show-window event on Windows so second instances can signal us
     if sys.platform == "win32":
